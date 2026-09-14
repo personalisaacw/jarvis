@@ -1,0 +1,6 @@
+venv/
+.venv/
+env/
+
+# Ignore large downloaded model files if you don't want them on GitHub
+*.onnx
