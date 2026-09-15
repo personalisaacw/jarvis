@@ -23,7 +23,7 @@ def get_target_files():
             continue
         for f in filenames:
             if os.path.splitext(f)[1].lower() in exts:
-                files.append(os.path.join(root, f))
+                files.append(os.path.relpath(os.path.join(root, f), PROJECT_DIR))
     return sorted(files)
 
 def backup_files():
