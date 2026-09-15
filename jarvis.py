@@ -103,7 +103,7 @@ def run_opencode_with_diff(prompt: str):
     """Launches OpenCode to implement the coding task."""
     print("[OpenCode] Running coding task...")
     proc = subprocess.Popen(
-        ["opencode", "--prompt", prompt, "--auto"],
+        ["opencode", "--model", "opencode/nemotron-3-ultra-free", "--variant", "high", "--thinking", "--prompt", prompt, "--auto"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         shell=True
