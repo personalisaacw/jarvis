@@ -71,7 +71,8 @@ code_route = Route(
 semantic_intent_router = SemanticRouter(
     encoder=encoder, 
     routes=[quick_route, thinking_route, code_route],
-    auto_sync="local"
+    auto_sync="local",
+    aggregation="max"
 )
 
 # ============================================================

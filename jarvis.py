@@ -89,11 +89,14 @@ code_route = Route(
         "write a code script",
         "add a feature to the codebase",
         "code a feature",
-        "help me write code"
+        "help me write code",
+        "write a readme file for my repo",
+        "create a new branch and commit the changes",
+        "push the newest code to our repository"
     ]
 )
 
-router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, code_route], auto_sync="local")
+router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, code_route], auto_sync="local", aggregation="max")
 tts_lock = threading.Lock()
 
 def run_opencode_with_diff(prompt: str):
