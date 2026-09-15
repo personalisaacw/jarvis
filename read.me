@@ -21,9 +21,8 @@ User Voice → STT (Whisper) → Semantic Router → Intent Classification → P
 
 - **`jarvis.py`** — Main voice pipeline: STT → Semantic Router → Ollama/OpenCode → TTS
 - **`router.py`** — HTTP proxy server for AnythingLLM integration, with semantic intent routing
-- **`ui_server.py`** — Code review dashboard (FastAPI + diff visualization)
-- **`diff_engine.py`** — File diff computation and backup for OpenCode integration
-- **`test_stream.py`** — Testing utilities for streaming
+- **`ui_server.py`** — Code review dashboard displaying git diffs via FastAPI
+- **`start_router.bat`** — Startup script
 
 ## Semantic Router Configuration
 

@@ -100,25 +100,16 @@ router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, co
 tts_lock = threading.Lock()
 
 def run_opencode_with_diff(prompt: str):
-    """Launches OpenCode, waits for it to finish, calculates diffs, and saves them."""
-    import diff_engine
-    print("[OpenCode] Starting coding task and backing up files...")
-    diff_engine.backup_files()
-    
-    print("[OpenCode] Running OpenCode CLI...")
+    """Launches OpenCode to implement the coding task."""
+    print("[OpenCode] Running coding task...")
     proc = subprocess.Popen(
         ["opencode", "--prompt", prompt, "--auto"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-    proc.wait()  # Wait for OpenCode to finish
+    proc.wait()
     print("[OpenCode] OpenCode finished executing.")
-    
-    diffs = diff_engine.compute_diffs()
-    diff_engine.save_diffs(diffs)
-    
-    print(f"[OpenCode] Done. {len(diffs)} file(s) changed.")
-    speak(f"Coding task completed. You can review the changes on your code review dashboard.")
+    speak("Coding task completed. Review git diffs on the dashboard.")
 
 print("Loading Piper TTS Voice into Memory...")
 piper_voice = PiperVoice.load("en_US-lessac-medium.onnx")
