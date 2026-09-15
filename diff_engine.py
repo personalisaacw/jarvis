@@ -19,6 +19,8 @@ def get_target_files():
             continue
         if "venv" in root:
             continue
+        if ".opencode" in root:
+            continue
         for f in filenames:
             if os.path.splitext(f)[1].lower() in exts:
                 files.append(os.path.join(root, f))
