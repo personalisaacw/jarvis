@@ -105,7 +105,8 @@ def run_opencode_with_diff(prompt: str):
     proc = subprocess.Popen(
         ["opencode", "--prompt", prompt, "--auto"],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
+        shell=True
     )
     proc.wait()
     print("[OpenCode] OpenCode finished executing.")
