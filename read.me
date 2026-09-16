@@ -11,15 +11,15 @@ User Voice → STT (Whisper) → Semantic Router → Intent Classification → P
                                               ▼             ▼             ▼
                                            jarvis_quick  jarvis_think  jarvis_code
                                               │             ▼             ▼
-                                              │         Ollama Chat   OpenCode
-                                              │         (LLM)         (Code Gen)
+                                              │         Ollama Chat   Antigravity CLI
+                                              │         (LLM)         (gpt-oss-120b-medium)
                                               ▼             ▼             ▼
                                            TTS Output    TTS Output   Diff UI
 ```
 
 ## Components
 
-- **`jarvis.py`** — Main voice pipeline: STT → Semantic Router → Ollama/OpenCode → TTS
+- **`jarvis.py`** — Main voice pipeline: STT → Semantic Router → Ollama/Antigravity CLI → TTS
 - **`router.py`** — HTTP proxy server for AnythingLLM integration, with semantic intent routing
 - **`ui_server.py`** — Code review dashboard displaying git diffs via FastAPI
 - **`start_router.bat`** — Startup script
@@ -34,7 +34,7 @@ The router uses `sentence-transformers/all-MiniLM-L6-v2` for embedding and `Loca
 |-------|-----------|-------------|---------|
 | `jarvis_quick` | None (default 0.5) | mean | Simple queries, quick answers |
 | `jarvis_think` | 0.45 | mean | Complex reasoning tasks |
-| `jarvis_code` | 0.45 | max | Code generation tasks via OpenCode |
+| `jarvis_code` | 0.45 | max | Code generation tasks via Antigravity CLI (`gpt-oss-120b-medium`) |
 
 ### Key Fix (aggregation="max")
 

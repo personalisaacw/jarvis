@@ -1,4 +1,7 @@
-﻿from fastapi import FastAPI, Request
+import os
+import shutil
+import subprocess
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, Response
 import httpx
 import json
@@ -165,13 +168,24 @@ async def proxy(request: Request, path: str):
                 )
                 
                 if route_info.name == "code":
-                    task_file = "C:\\OllamaThinkRouter\\opencode_task.md"
-                    with open(task_file, "w", encoding="utf-8") as f:
-                        f.write(f"# Opencode Task\n\n- **Prompt**: {text}\n- **Created**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\nThis task was automatically routed from router.py proxy. Opencode, please analyze and implement this task.")
+                    agy_bin = shutil.which("agy") or os.path.expandvars(r"%LOCALAPPDATA%\agy\bin\agy.exe")
+                    project_dir = "C:\\OllamaThinkRouter"
                     
-                    print_audit_box("ROUTED TO OPENCODE", f"Task written to {task_file}")
-                    
-                    msg = f"[Opencode Router] This coding task has been successfully routed to Opencode for execution. Please check the 'opencode_task.md' file in your workspace."
+                    try:
+                        subprocess.Popen(
+                            [
+                                agy_bin,
+                                "-p", text,
+                                "--model", "gpt-oss-120b-medium",
+                                "--dangerously-skip-permissions"
+                            ],
+                            cwd=project_dir
+                        )
+                        print_audit_box("ROUTED TO ANTIGRAVITY CLI", f"Executing Antigravity CLI with gpt-oss-120b-medium for prompt:\n{text}")
+                        msg = f"[Antigravity Router] Coding task has been routed to Antigravity CLI (model: gpt-oss-120b-medium). Changes can be reviewed on the dashboard."
+                    except Exception as e:
+                        print_audit_box("ANTIGRAVITY CLI ERROR", str(e))
+                        msg = f"[Antigravity Router] Failed to launch Antigravity CLI: {e}"
                     
                     async def custom_stream():
                         if path == "api/chat":
