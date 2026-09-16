@@ -1,18 +1,37 @@
+import os
+import shutil
 import re
 import time
 import io
 import wave
+import queue
+import collections
 import threading
 import subprocess
 import uvicorn
 import sounddevice as sd
 import numpy as np
+import onnxruntime as ort
 import speech_recognition as sr
 from faster_whisper import WhisperModel
 from semantic_router import Route, SemanticRouter
 from semantic_router.encoders import HuggingFaceEncoder
 from piper.voice import PiperVoice
 import ollama
+
+# ============================================================
+# SILERO VAD INITIALIZATION (CPU - ONNX)
+# ============================================================
+print("Loading Silero VAD on CPU...")
+vad_options = ort.SessionOptions()
+vad_options.inter_op_num_threads = 1
+vad_options.intra_op_num_threads = 1
+
+vad_session = ort.InferenceSession(
+    "silero_vad.onnx", 
+    sess_options=vad_options, 
+    providers=["CPUExecutionProvider"]
+)
 
 # ============================================================
 # 1. CONFIGURATION & FUTURE-PROOF MODEL REGISTRY
@@ -36,6 +55,12 @@ SYSTEM_PROMPTS = {
     ),
     "code": ""
 }
+
+# coding vocabulary
+CODING_VOCAB_PROMPT = (
+    "A software development session discussing README, PyTorch, "
+    "FastAPI, GitHub repo, Docker, Kubernetes, JSON, YAML, git diff, refactor."
+)
 
 # ============================================================
 # 2. INITIALIZE AUDIO & ROUTING ENGINES (CPU)
@@ -89,33 +114,54 @@ code_route = Route(
         "write a code script",
         "add a feature to the codebase",
         "code a feature",
-        "help me write code"
+        "code a new feature",
+        "implement a new coding feature",
+        "help me write code",
+        "write a readme file for my repo",
+        "create a new branch and commit the changes",
+        "push the newest code to our repository"
     ]
 )
 
-router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, code_route], auto_sync="local")
+router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, code_route], auto_sync="local", aggregation="max")
 tts_lock = threading.Lock()
 
-def run_opencode_with_diff(prompt: str):
-    """Launches OpenCode, waits for it to finish, calculates diffs, and saves them."""
-    import diff_engine
-    print("[OpenCode] Starting coding task and backing up files...")
-    diff_engine.backup_files()
+ANTIGRAVITY_CODING_MODEL = "gemini-3.8-flash-medium"
+
+def run_antigravity_coding_task(prompt: str):
+    """Launches Antigravity CLI with GPT OSS model to implement the coding task."""
+    print(f"\n[Antigravity CLI] Running coding task with model '{ANTIGRAVITY_CODING_MODEL}'...")
+    print(f"[Antigravity CLI] Prompt: '{prompt}'")
+    speak("I am on it. Directing the coding task to Antigravity.")
     
-    print("[OpenCode] Running OpenCode CLI...")
-    proc = subprocess.Popen(
-        ["opencode", "--prompt", prompt, "--auto"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    proc.wait()  # Wait for OpenCode to finish
-    print("[OpenCode] OpenCode finished executing.")
+    agy_bin = shutil.which("agy") or os.path.expandvars(r"%LOCALAPPDATA%\agy\bin\agy.exe")
+    if not (shutil.which("agy") or os.path.exists(agy_bin)):
+        print(f"[Antigravity CLI] Error: agy binary not found at {agy_bin}")
+        speak("Error: Antigravity CLI binary was not found.")
+        return
+
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    cmd = [
+        agy_bin,
+        "-p", prompt,
+        "--model", ANTIGRAVITY_CODING_MODEL,
+        "--dangerously-skip-permissions"
+    ]
     
-    diffs = diff_engine.compute_diffs()
-    diff_engine.save_diffs(diffs)
-    
-    print(f"[OpenCode] Done. {len(diffs)} file(s) changed.")
-    speak(f"Coding task completed. You can review the changes on your code review dashboard.")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=project_dir
+        )
+        proc.wait()
+        print("\n[Antigravity CLI] Coding task execution completed.")
+        speak("Coding task completed. Review git diffs on the dashboard.")
+    except Exception as e:
+        print(f"\n[Antigravity CLI] Error executing task: {e}")
+        speak("An error occurred while executing the Antigravity coding task.")
+
+# Maintain backwards compatibility
+run_opencode_with_diff = run_antigravity_coding_task
 
 print("Loading Piper TTS Voice into Memory...")
 piper_voice = PiperVoice.load("en_US-lessac-medium.onnx")
@@ -194,16 +240,142 @@ def determine_intent(text: str):
         return False, "code"
     return False, "quick"
 
-def listen_for_command():
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("\nListening...")
-        recognizer.adjust_for_ambient_noise(source, duration=0.5)
-        audio = recognizer.listen(source)
+def get_preferred_microphone():
+    """Finds Yeti or AirPods microphone, otherwise falls back to default."""
+    try:
+        devices = sd.query_devices()
+        yeti_id = None
+        airpods_id = None
         
-        with open("temp.wav", "wb") as f:
-            f.write(audio.get_wav_data())
-        return "temp.wav"
+        for i, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0:
+                name = dev['name'].lower()
+                if 'yeti' in name:
+                    yeti_id = i
+                    break  # Highest priority
+                if 'isaac' in name and 'airpod' in name and airpods_id is None:
+                    airpods_id = i
+                    
+        if yeti_id is not None:
+            print(f"[Audio] Selected Yeti microphone (Device {yeti_id})")
+            return yeti_id
+        if airpods_id is not None:
+            print(f"[Audio] Selected AirPods microphone (Device {airpods_id})")
+            return airpods_id
+    except Exception as e:
+        print(f"[Audio] Error finding preferred mic: {e}")
+        
+    print("[Audio] Using default system microphone")
+    return None
+
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    import audioop
+
+def listen_for_command():
+    """
+    Listens using Silero VAD running locally on ONNX Runtime.
+    Tolerates cognitive pauses and outputs 16kHz WAV for Whisper.
+    Captures at native mic sample rate and resamples in real-time to avoid driver distortion.
+    Uses a 64-sample rolling context buffer required by Silero VAD v5.
+    """
+    device_id = get_preferred_microphone()
+    
+    # Get native sample rate for the selected device
+    if device_id is not None:
+        device_info = sd.query_devices(device_id, 'input')
+        native_sr = int(device_info['default_samplerate'])
+    else:
+        native_sr = int(sd.query_devices(sd.default.device[0], 'input')['default_samplerate'])
+        
+    TARGET_SR = 16000
+    CHUNK_DURATION = 0.032  # 32ms
+    NATIVE_CHUNK = int(native_sr * CHUNK_DURATION)
+    CONTEXT_SIZE = 64  # Rolling context window required by Silero VAD v5
+    
+    SPEECH_PROB_THRESHOLD = 0.5
+    PAUSE_TOLERANCE_SEC = 1.6  # Silence duration to conclude speaker is finished
+    PRE_BUFFER_CHUNKS = 12     # Preserves ~0.38s of audio before voice triggers
+
+    # Silero recurrent LSTM hidden states
+    state = np.zeros((2, 1, 128), dtype=np.float32)
+    sample_rate_tensor = np.array(TARGET_SR, dtype=np.int64)
+    context = np.zeros(CONTEXT_SIZE, dtype=np.float32)  # Rolling context buffer
+
+    audio_q = queue.Queue()
+
+    def mic_callback(indata, frames, time_info, status):
+        audio_q.put(indata.copy())
+
+    print(f"\nListening on Device {device_id} at {native_sr}Hz (Silero VAD)...")
+    
+    pre_speech_ring = collections.deque(maxlen=PRE_BUFFER_CHUNKS)
+    voiced_chunks = []
+    is_speaking = False
+    silence_start_time = None
+    state_ratecv = None
+
+    with sd.InputStream(device=device_id, samplerate=native_sr, channels=1, dtype='int16', 
+                        blocksize=NATIVE_CHUNK, callback=mic_callback):
+        while True:
+            chunk_int16 = audio_q.get()
+            
+            # Resample to 16kHz for VAD and Whisper
+            if native_sr != TARGET_SR:
+                chunk_bytes, state_ratecv = audioop.ratecv(chunk_int16.tobytes(), 2, 1, native_sr, TARGET_SR, state_ratecv)
+                chunk_16k = np.frombuffer(chunk_bytes, dtype=np.int16)
+            else:
+                chunk_16k = chunk_int16.flatten()
+                
+            chunk_f32 = chunk_16k.astype(np.float32) / 32768.0
+
+            # Prepend 64-sample rolling context (required by Silero VAD v5)
+            input_with_context = np.concatenate([context, chunk_f32])
+            context = chunk_f32[-CONTEXT_SIZE:]
+            
+            chunk_flat = input_with_context.reshape(1, -1)
+
+            # Silero VAD forward pass (< 1 ms on CPU)
+            ort_inputs = {
+                'input': chunk_flat,
+                'state': state,
+                'sr': sample_rate_tensor
+            }
+            ort_outs = vad_session.run(None, ort_inputs)
+            speech_prob = ort_outs[0][0][0]
+            state = ort_outs[1]
+
+            if speech_prob >= SPEECH_PROB_THRESHOLD:
+                if not is_speaking:
+                    is_speaking = True
+                    # Prepend buffered audio so first syllable is never lost
+                    voiced_chunks.extend(pre_speech_ring)
+                    pre_speech_ring.clear()
+                
+                voiced_chunks.append(chunk_16k)
+                silence_start_time = None  # Reset silence timer while talking
+            else:
+                if is_speaking:
+                    voiced_chunks.append(chunk_16k)
+                    if silence_start_time is None:
+                        silence_start_time = time.perf_counter()
+                    elif time.perf_counter() - silence_start_time >= PAUSE_TOLERANCE_SEC:
+                        # User took a full 1.6s pause after speaking: turn is complete
+                        break
+                else:
+                    pre_speech_ring.append(chunk_16k)
+
+    # Convert collected 16-bit PCM chunks and export to temp.wav
+    all_audio = np.concatenate(voiced_chunks, axis=0)
+
+    with wave.open("temp.wav", "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(TARGET_SR)
+        wf.writeframes(all_audio.tobytes())
+
+    return "temp.wav"
 
 def speak(text):
     """In-memory TTS playback: synthesizes to RAM and writes directly to sound card."""
@@ -271,7 +443,7 @@ def main_loop():
             print("JARVIS: ", end="", flush=True)
             
             if mode_key == "code":
-                threading.Thread(target=run_opencode_with_diff, args=(transcript,)).start()
+                threading.Thread(target=run_antigravity_coding_task, args=(transcript,)).start()
                 continue
             
             # Standard Ollama Streaming
