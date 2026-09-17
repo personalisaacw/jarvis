@@ -97,20 +97,24 @@ class AgentManager:
         working_dir = cwd or os.path.dirname(os.path.abspath(__file__))
         cmd = self._cli_registry[cli_key](prompt, working_dir, is_continuation)
 
-        # ── Capture baseline for diff verification before agent runs ──
+        # ── Capture baseline for diff verification asynchronously ──
         if not is_continuation:
-            try:
-                diff_engine = DiffEngineFactory.create(working_dir)
-                tts_presenter = TTSPresenter(on_speech=self.on_speech)
-                hud_presenter = DesktopHUDPresenter(on_command=self._on_hud_command)
-                composite = MultiPresenterComposite([tts_presenter, hud_presenter, self.mobile_presenter])
-                self.review_coordinator = ReviewSessionCoordinator(diff_engine, composite)
-                self.voice_grammar = ReviewVoiceGrammar(coordinator=self.review_coordinator)
-                self.review_coordinator.start_session(working_dir)
-                print(f"[AgentManager] Baseline captured for diff verification in {working_dir}")
-            except Exception as e:
-                print(f"[AgentManager] Warning: Could not capture baseline: {e}")
-                self.review_coordinator = None
+            def capture_baseline():
+                try:
+                    diff_engine = DiffEngineFactory.create(working_dir)
+                    tts_presenter = TTSPresenter(on_speech=self.on_speech)
+                    hud_presenter = DesktopHUDPresenter(on_command=self._on_hud_command)
+                    composite = MultiPresenterComposite([tts_presenter, hud_presenter, self.mobile_presenter])
+                    self.review_coordinator = ReviewSessionCoordinator(diff_engine, composite)
+                    self.voice_grammar = ReviewVoiceGrammar(coordinator=self.review_coordinator)
+                    self.review_coordinator.start_session(working_dir)
+                    print(f"[AgentManager] Baseline captured for diff verification in {working_dir}")
+                except Exception as e:
+                    print(f"[AgentManager] Warning: Could not capture baseline: {e}")
+                    self.review_coordinator = None
+            
+            import threading
+            threading.Thread(target=capture_baseline, daemon=True).start()
 
         session = CLIAgentSession(
             command=cmd,

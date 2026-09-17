@@ -139,7 +139,7 @@ def run_antigravity_coding_task(prompt: str):
     """Launches Antigravity CLI via AgentManager."""
     print(f"\n[Antigravity CLI] Running coding task via AgentManager...")
     print(f"[Antigravity CLI] Prompt: '{prompt}'")
-    speak("I am on it. Directing the coding task to Antigravity.")
+    threading.Thread(target=speak, args=("I am on it. Directing the coding task to Antigravity.",), daemon=True).start()
     project_dir = os.path.dirname(os.path.abspath(__file__))
     if agent_manager:
         agent_manager.start_session("antigravity", prompt=prompt, cwd=project_dir)
@@ -449,6 +449,18 @@ def main_loop():
         try:
             audio_file = listen_for_command()
             t0 = time.perf_counter()
+            
+            # Optimistic Acknowledgment (UX A)
+            def play_chime():
+                try:
+                    fs = 44100
+                    duration = 0.15
+                    t = np.linspace(0, duration, int(fs * duration), False)
+                    note = np.sin(880.0 * t * 2 * np.pi) * np.exp(-5 * t) * 0.1
+                    sd.play((note * 32767).astype(np.int16), samplerate=fs, blocking=False)
+                except:
+                    pass
+            threading.Thread(target=play_chime, daemon=True).start()
             
             # STT
             segments, _ = stt_model.transcribe(audio_file, beam_size=5)
