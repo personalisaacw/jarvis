@@ -302,6 +302,11 @@ def listen_for_command():
         while True:
             chunk_int16 = audio_q.get()
             
+            if tts_lock.locked():
+                # Prevent the assistant from hearing its own TTS output
+                pre_speech_ring.clear()
+                continue
+
             # Resample to 16kHz for VAD and Whisper
             if native_sr != TARGET_SR:
                 chunk_bytes, state_ratecv = audioop.ratecv(chunk_int16.tobytes(), 2, 1, native_sr, TARGET_SR, state_ratecv)

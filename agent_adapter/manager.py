@@ -11,7 +11,7 @@ def default_antigravity_cmd(prompt: str, cwd: str) -> List[str]:
     agy_bin = shutil.which("agy") or os.path.expandvars(r"%LOCALAPPDATA%\agy\bin\agy.exe")
     return [
         agy_bin,
-        "-p", prompt,
+        "-i", prompt,
         "--model", "gemini-3.8-flash-medium",
         "--dangerously-skip-permissions",
         "--add-dir", cwd

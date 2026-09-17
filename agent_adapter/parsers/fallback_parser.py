@@ -16,7 +16,9 @@ class RegexFallbackParser(BaseParser):
         r"what would you like to name",
         r"enter your choice",
         r"branch name\??",
-        r"repository path\??"
+        r"repository path\??",
+        r"please let me know:",
+        r"\b1\. "
     ]
 
     COMPLETION_PATTERNS = [
