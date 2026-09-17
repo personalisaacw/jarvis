@@ -1,12 +1,13 @@
-﻿from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, Response
 import httpx
 import json
 import time
 
-# Import Semantic Router
-from semantic_router import Route, SemanticRouter
-from semantic_router.encoders import HuggingFaceEncoder
+from adapters.vector_store import FaissAdapter
+from adapters.embeddings import HuggingFaceAdapter
+from use_cases.routing import RouteCommandUseCase
+from domain.entities import Intent
 
 app = FastAPI()
 
@@ -21,58 +22,13 @@ QUICK_NUM_CTX = 4096
 THINKING_NUM_CTX = 8192
 
 # ============================================================
-# SEMANTIC ROUTER INITIALIZATION
+# ROUTER INITIALIZATION
 # ============================================================
 
-print("[INIT] Loading Semantic Router on CPU...")
-encoder = HuggingFaceEncoder(name="sentence-transformers/all-MiniLM-L6-v2")
-
-quick_route = Route(
-    name="quick",
-    utterances=[
-        "what time is it",
-        "how tall is the eiffel tower",
-        "give me a quick summary of hashmaps",
-        "turn off the living room lights",
-        "who is the president of france",
-        "translate hello to spanish"
-    ]
-)
-
-thinking_route = Route(
-    name="think",
-    utterances=[
-        "design a scalable architecture for a react app",
-        "analyze this concept and explain the pros and cons",
-        "plan a detailed itinerary for my trip to japan",
-        "walk me through the logic of a neural network",
-        "refactor this code and explain the changes"
-    ]
-)
-
-code_route = Route(
-    name="code",
-    utterances=[
-        "write a python script to list files",
-        "implement a new feature in my project",
-        "fix the bug in router.py",
-        "build a flask api",
-        "refactor the authentication logic",
-        "write a javascript function to sort an array",
-        "create a new react component",
-        "write code for sorting an array",
-        "develop a coding solution",
-        "help me refactor some functions",
-        "write a code script",
-        "add a feature to the codebase"
-    ]
-)
-
-semantic_intent_router = SemanticRouter(
-    encoder=encoder, 
-    routes=[quick_route, thinking_route, code_route],
-    auto_sync="local"
-)
+print("[INIT] Loading Vector DB Router...")
+vector_store = FaissAdapter()
+embedding_engine = HuggingFaceAdapter()
+route_use_case = RouteCommandUseCase(vector_store, embedding_engine, fallback_threshold=0.30)
 
 # ============================================================
 # AUDIT LOGGER HELPERS
@@ -88,11 +44,10 @@ def get_last_user_message(data: dict) -> str:
     return ""
 
 def determine_intent(text: str):
-    """Returns a tuple of (boolean_should_think, raw_route_object)"""
-    route = semantic_intent_router(text)
-    if route.name == "think":
-        return True, route
-    return False, route
+    """Returns a tuple of (boolean_should_think, intent_value)"""
+    result = route_use_case.execute(text)
+    should_think = (result.intent == Intent.THINK)
+    return should_think, result.intent.value
 
 def print_audit_box(title: str, content: str):
     """Prints a clean, boxed layout in the terminal for debugging."""
@@ -155,15 +110,15 @@ async def proxy(request: Request, path: str):
                 print_audit_box("2. EXTRACTED PROMPT", text)
                 
                 # 3. Analyze Intent
-                should_think, route_info = determine_intent(text)
+                should_think, route_name = determine_intent(text)
                 
                 print_audit_box(
-                    "3. SEMANTIC ROUTER DECISION", 
-                    f"Matched Route: {route_info.name if route_info.name else 'None (Fell back to QUICK)'}\n"
+                    "3. VECTOR DB ROUTER DECISION", 
+                    f"Matched Route: {route_name}\n"
                     f"Action: Setting think={should_think}\n"
                 )
                 
-                if route_info.name == "code":
+                if route_name == "code":
                     task_file = "C:\\OllamaThinkRouter\\opencode_task.md"
                     with open(task_file, "w", encoding="utf-8") as f:
                         f.write(f"# Opencode Task\n\n- **Prompt**: {text}\n- **Created**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\nThis task was automatically routed from router.py proxy. Opencode, please analyze and implement this task.")

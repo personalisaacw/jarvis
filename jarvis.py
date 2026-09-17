@@ -43,57 +43,17 @@ SYSTEM_PROMPTS = {
 print("Loading Whisper STT on CPU...")
 stt_model = WhisperModel("base.en", device="cpu", compute_type="int8")
 
-print("Loading Semantic Router on CPU...")
-encoder = HuggingFaceEncoder(name="sentence-transformers/all-MiniLM-L6-v2")
+from adapters.vector_store import FaissAdapter
+from adapters.embeddings import HuggingFaceAdapter
+from use_cases.routing import RouteCommandUseCase, LearnFromFeedbackUseCase
+from domain.entities import Intent
 
-quick_route = Route(
-    name="jarvis_quick", # Changed to bypass stale cache
-    utterances=[
-        "what time is it", 
-        "who is the president of france",
-        "turn off the living room lights",
-        "what is the weather like",
-        "define a hashmap in one sentence"
-    ]
-)
+print("Loading New Router Architecture...")
+vector_store = FaissAdapter()
+embedding_engine = HuggingFaceAdapter()
+route_use_case = RouteCommandUseCase(vector_store, embedding_engine, fallback_threshold=0.30)
+feedback_use_case = LearnFromFeedbackUseCase(vector_store, embedding_engine)
 
-thinking_route = Route(
-    name="jarvis_think", # Changed to bypass stale cache
-    score_threshold=0.45,
-    utterances=[
-        "design a scalable architecture", 
-        "analyze this concept and explain the trade-offs",
-        "plan a detailed travel itinerary",
-        "explain the logic of backpropagation",
-        "compare relational and document databases",
-        "walk me through the steps to solve this",
-        "break down how this works",
-        "what is the deep reasoning behind this"
-    ]
-)
-
-code_route = Route(
-    name="jarvis_code",
-    score_threshold=0.45,
-    utterances=[
-        "write a python script to list files",
-        "implement a new feature in my project",
-        "fix the bug in router.py",
-        "build a flask api",
-        "refactor the authentication logic",
-        "write a javascript function to sort an array",
-        "create a new react component",
-        "write code for sorting an array",
-        "develop a coding solution",
-        "help me refactor some functions",
-        "write a code script",
-        "add a feature to the codebase",
-        "code a feature",
-        "help me write code"
-    ]
-)
-
-router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, code_route], auto_sync="local")
 tts_lock = threading.Lock()
 
 def run_opencode_with_diff(prompt: str):
@@ -128,71 +88,26 @@ def clean_for_speech(text: str) -> str:
     text = re.sub(r'[*#_`~>]', '', text)
     return text.strip()
 
-def get_raw_audit_scores(clean_text: str) -> dict:
-    """Manually calculates the exact cosine similarity BEFORE routing occurs."""
-    try:
-        # 1. Convert the incoming text into a mathematical vector
-        query_vec = np.array(encoder([clean_text])[0])
-        scores = {}
-        
-        # 2. Calculate the math against our three routes
-        for r in [quick_route, thinking_route, code_route]:
-            route_vecs = np.array(encoder(r.utterances))
-            
-            # Cosine similarity formula
-            norms = np.linalg.norm(route_vecs, axis=1) * np.linalg.norm(query_vec)
-            sims = np.dot(route_vecs, query_vec) / norms
-            
-            # Grab the highest scoring utterance in the route
-            scores[r.name] = float(np.max(sims))
-            
-        return scores
-    except Exception as e:
-        print(f"│  * (Audit Math Error: {e})")
-        return {}
-
 def determine_intent(text: str):
     """
-    Evaluates semantic intent, prints a detailed math audit box, 
-    and returns (is_thinking_task, mode_key).
+    Evaluates semantic intent using the new Vector DB UseCase.
     """
-    # 1. Normalize text (remove punctuation, lowercase) to maximize match accuracy
     clean_text = re.sub(r'[^\w\s]', '', text).lower()
     
-    # 2. Print the Audit Box Header
-    print("\n┌── [SEMANTIC ROUTER AUDIT] " + "─" * 30)
+    print("\n┌── [VECTOR DB ROUTER AUDIT] " + "─" * 30)
     print(f"│ Spoken:  '{text}'")
     print(f"│ Cleaned: '{clean_text}'")
-    print(f"├─ [Pre-Routing Calculated Scores]")
     
-    # 3. Fetch raw scores manually BEFORE the library applies thresholds
-    raw_scores = get_raw_audit_scores(clean_text)
-    if raw_scores:
-        for r_name, score in raw_scores.items():
-            print(f"│  * Route '{r_name}': {score:.4f}")
-    else:
-        print(f"│  * (Could not compute raw scores)")
-            
+    result = route_use_case.execute(clean_text)
+    
     print(f"├─ [Final Decision]")
-    
-    # 4. Now send it to the router library for the final decision
-    route = router(clean_text)
-    
-    # 5. Safely handle the route object (it will be None if below threshold)
-    matched_name = getattr(route, 'name', None)
-    
-    if matched_name:
-        print(f"│  Selected Route: {matched_name}")
-    else:
-        print(f"│  Selected Route: NONE (Defaulting to QUICK)")
-        
+    print(f"│  Selected Route: {result.intent.value.upper()}")
+    print(f"│  Confidence: {result.confidence_score:.4f}")
+    print(f"│  Clarification Needed: {result.requires_clarification}")
     print("└" + "─" * 58 + "\n")
     
-    if matched_name == "jarvis_think":
-        return True, "think"
-    if matched_name == "jarvis_code":
-        return False, "code"
-    return False, "quick"
+    return result
+
 
 def listen_for_command():
     recognizer = sr.Recognizer()
@@ -259,7 +174,26 @@ def main_loop():
             print(f"\nYou: {transcript}")
 
             # Intent Classification
-            is_thinking_task, mode_key = determine_intent(transcript)
+            route_result = determine_intent(transcript)
+            mode_key = route_result.intent.value
+            
+            if route_result.requires_clarification:
+                speak("I'm not completely sure. Should I write code for this, or just think about it?")
+                print("\n[Waiting for clarification...]")
+                clarification_audio = listen_for_command()
+                cl_segments, _ = stt_model.transcribe(clarification_audio, beam_size=5)
+                clarification = "".join([s.text for s in cl_segments]).strip().lower()
+                
+                if "code" in clarification:
+                    mode_key = "code"
+                elif "think" in clarification:
+                    mode_key = "think"
+                else:
+                    mode_key = "quick"
+                
+                print(f"[Learned new mapping: {mode_key.upper()}]")
+                feedback_use_case.execute(transcript, mode_key)
+                
             print(f"[Router: {mode_key.upper()} | Model: {ACTIVE_MODEL}]")
 
             # Dynamic System Prompt Selection
