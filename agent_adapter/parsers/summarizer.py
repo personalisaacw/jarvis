@@ -73,7 +73,7 @@ class AudioProgressThrottler(BaseParser):
         try:
             cleaned = buffer[-2000:].strip()
             response = self.client.chat.completions.create(
-                model="llama3-8b-8192",
+                model="qwen/qwen3.8-27b",
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": cleaned}
