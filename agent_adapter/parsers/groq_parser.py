@@ -153,8 +153,8 @@ class GroqTerminalParser(BaseParser):
     """Parses raw CLI terminal output using GroqCloud API for ultra-low-latency voice summaries."""
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        self.api_key = api_key or os.environ.get("GROQ_API_KEY", "")
-        self.model = model or os.environ.get("GROQ_MODEL", GROQ_DEFAULT_MODEL)
+        self.api_key = api_key if api_key is not None else os.environ.get("GROQ_API_KEY", "")
+        self.model = model if model is not None else os.environ.get("GROQ_MODEL", GROQ_DEFAULT_MODEL)
         self.client = None
         if self.api_key:
             self.client = OpenAI(
