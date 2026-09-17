@@ -34,6 +34,8 @@ def default_opencode_cmd(prompt: str, cwd: str, is_continuation: bool = False) -
     return [opencode_bin, prompt]
 
 
+from .parsers.summarizer import AudioProgressThrottler
+
 class AgentManager:
     """
     Central registry and coordinator for agentic CLIs.
@@ -47,10 +49,12 @@ class AgentManager:
     ):
         # Auto-configure parser: Groq if key is present, otherwise fallback
         if parser:
-            self.parser = parser
+            base_parser = parser
         else:
             groq = GroqTerminalParser()
-            self.parser = groq if groq.is_available() else RegexFallbackParser()
+            base_parser = groq if groq.is_available() else RegexFallbackParser()
+            
+        self.parser = AudioProgressThrottler(base_parser)
 
         self.on_speech = on_speech
         self.active_session: Optional[CLIAgentSession] = None
