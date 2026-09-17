@@ -6,7 +6,7 @@ from openai import OpenAI
 from ..base import BaseParser, ParseResult
 
 
-GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
+GROQ_DEFAULT_MODEL = "qwen/qwen3.8-27b"
 
 SYSTEM_PROMPT = """You are the Terminal-to-Speech Interpreter for JARVIS, an ambient AI voice coding assistant.
 Your job is to analyze raw terminal output emitted by agentic coding CLIs (e.g. Antigravity, OpenCode, Claude Code, Aider, Codex, Kilo, Pi) and convert it into a natural, speech-friendly message for Text-to-Speech (TTS).
@@ -152,9 +152,9 @@ Reply strictly with valid JSON conforming to the schema above.
 class GroqTerminalParser(BaseParser):
     """Parses raw CLI terminal output using GroqCloud API for ultra-low-latency voice summaries."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = GROQ_DEFAULT_MODEL):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.environ.get("GROQ_API_KEY", "")
-        self.model = model
+        self.model = model or os.environ.get("GROQ_MODEL", GROQ_DEFAULT_MODEL)
         self.client = None
         if self.api_key:
             self.client = OpenAI(
