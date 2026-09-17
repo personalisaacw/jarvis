@@ -7,18 +7,21 @@ from .parsers.fallback_parser import RegexFallbackParser
 from .sessions.cli_session import CLIAgentSession
 
 
-def default_antigravity_cmd(prompt: str, cwd: str) -> List[str]:
+def default_antigravity_cmd(prompt: str, cwd: str, is_continuation: bool = False) -> List[str]:
     agy_bin = shutil.which("agy") or os.path.expandvars(r"%LOCALAPPDATA%\agy\bin\agy.exe")
-    return [
+    cmd = [
         agy_bin,
-        "-i", prompt,
+        "-p", prompt,
         "--model", "gemini-3.8-flash-medium",
         "--dangerously-skip-permissions",
         "--add-dir", cwd
     ]
+    if is_continuation:
+        cmd.append("-c")
+    return cmd
 
 
-def default_opencode_cmd(prompt: str, cwd: str) -> List[str]:
+def default_opencode_cmd(prompt: str, cwd: str, is_continuation: bool = False) -> List[str]:
     opencode_bin = shutil.which("opencode") or "opencode"
     return [opencode_bin, prompt]
 
@@ -43,13 +46,13 @@ class AgentManager:
 
         self.on_speech = on_speech
         self.active_session: Optional[CLIAgentSession] = None
-        self._cli_registry: Dict[str, Callable[[str, str], List[str]]] = {}
+        self._cli_registry: Dict[str, Callable[[str, str, bool], List[str]]] = {}
 
         # Register default CLIs
         self.register_cli("antigravity", default_antigravity_cmd)
         self.register_cli("opencode", default_opencode_cmd)
 
-    def register_cli(self, name: str, cmd_factory: Callable[[str, str], List[str]]) -> None:
+    def register_cli(self, name: str, cmd_factory: Callable[[str, str, bool], List[str]]) -> None:
         """Registers a CLI command builder by name."""
         self._cli_registry[name.lower()] = cmd_factory
 
@@ -61,10 +64,11 @@ class AgentManager:
         self,
         cli_name: str,
         prompt: str,
-        cwd: Optional[str] = None
+        cwd: Optional[str] = None,
+        is_continuation: bool = False
     ) -> Optional[CLIAgentSession]:
         """Launches a new agent session for the specified CLI name and initial prompt."""
-        if self.has_active_session():
+        if self.has_active_session() and not is_continuation:
             print(f"[AgentManager] Active session already running for {self.active_session.cli_name}. Stopping prior session.")
             self.stop_active_session()
 
@@ -77,7 +81,7 @@ class AgentManager:
             return None
 
         working_dir = cwd or os.path.dirname(os.path.abspath(__file__))
-        cmd = self._cli_registry[cli_key](prompt, working_dir)
+        cmd = self._cli_registry[cli_key](prompt, working_dir, is_continuation)
 
         session = CLIAgentSession(
             command=cmd,
@@ -93,10 +97,21 @@ class AgentManager:
 
     def send_input(self, text: str) -> None:
         """Routes human voice input to the currently active CLI session."""
-        if not self.has_active_session():
+        if not self.active_session:
             print("[AgentManager] No active session to receive input.")
             return
-        self.active_session.send_input(text)
+
+        if not self.active_session.is_active() and self.active_session.is_waiting_for_input():
+            # Stateless continuation: process exited but waiting for input
+            print(f"[AgentManager] Statelessly continuing {self.active_session.cli_name}...")
+            self.start_session(
+                self.active_session.cli_name,
+                text,
+                cwd=self.active_session.cwd,
+                is_continuation=True
+            )
+        else:
+            self.active_session.send_input(text)
 
     def stop_active_session(self) -> None:
         """Terminates the active session if one is running."""
@@ -104,8 +119,12 @@ class AgentManager:
             self.active_session.stop()
             self.active_session = None
 
-    def _on_session_finished(self) -> None:
+    def _on_session_finished(self, was_waiting_for_input: bool = False) -> None:
         """Internal callback invoked when a session exits."""
+        if was_waiting_for_input:
+            # We purposefully do not reset the active_session or announce finish
+            return
+
         print("[AgentManager] Session ended. Restoring ambient voice mode.")
         if self.on_speech:
             self.on_speech("Coding task has finished. Returning to voice assistant mode.")

@@ -89,7 +89,7 @@ def test_agent_manager_cli_lifecycle():
     # Register a simple echo CLI for testing
     manager.register_cli(
         "test_echo",
-        lambda p, cwd: [sys.executable, "-c", "import sys; print('Ready for input?'); sys.stdout.flush(); line = sys.stdin.readline(); print('Finished task execution completed.'); sys.stdout.flush()"]
+        lambda p, cwd, is_continuation: [sys.executable, "-c", "import sys; print('Ready for input?'); sys.stdout.flush(); line = sys.stdin.readline(); print('Finished task execution completed.'); sys.stdout.flush()"]
     )
 
     session = manager.start_session("test_echo", prompt="test", cwd=os.path.dirname(os.path.abspath(__file__)))

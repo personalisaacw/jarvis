@@ -188,4 +188,4 @@ class CLIAgentSession(BaseAgentSession):
         print(f"[{self.cli_name}] Process terminated.")
         self._is_running = False
         if self.on_session_finished:
-            self.on_session_finished()
+            self.on_session_finished(self._is_waiting_for_input)
