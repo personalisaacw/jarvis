@@ -7,3 +7,5 @@ __pycache__/
 .agent/
 .opencode/
 diffs.json
+.env
+.vectorstore/

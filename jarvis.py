@@ -1,4 +1,8 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import shutil
 import re
 import time
@@ -18,6 +22,8 @@ from semantic_router import Route, SemanticRouter
 from semantic_router.encoders import HuggingFaceEncoder
 from piper.voice import PiperVoice
 import ollama
+from typing import Optional
+from agent_adapter import AgentManager, GroqTerminalParser, RegexFallbackParser
 
 # ============================================================
 # SILERO VAD INITIALIZATION (CPU - ONNX)
@@ -127,41 +133,20 @@ router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, co
 tts_lock = threading.Lock()
 
 ANTIGRAVITY_CODING_MODEL = "gemini-3.8-flash-medium"
+agent_manager: Optional[AgentManager] = None
 
 def run_antigravity_coding_task(prompt: str):
-    """Launches Antigravity CLI with GPT OSS model to implement the coding task."""
-    print(f"\n[Antigravity CLI] Running coding task with model '{ANTIGRAVITY_CODING_MODEL}'...")
+    """Launches Antigravity CLI via AgentManager."""
+    print(f"\n[Antigravity CLI] Running coding task via AgentManager...")
     print(f"[Antigravity CLI] Prompt: '{prompt}'")
     speak("I am on it. Directing the coding task to Antigravity.")
-    
-    agy_bin = shutil.which("agy") or os.path.expandvars(r"%LOCALAPPDATA%\agy\bin\agy.exe")
-    if not (shutil.which("agy") or os.path.exists(agy_bin)):
-        print(f"[Antigravity CLI] Error: agy binary not found at {agy_bin}")
-        speak("Error: Antigravity CLI binary was not found.")
-        return
-
     project_dir = os.path.dirname(os.path.abspath(__file__))
-    cmd = [
-        agy_bin,
-        "-p", prompt,
-        "--model", ANTIGRAVITY_CODING_MODEL,
-        "--dangerously-skip-permissions"
-    ]
-    
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=project_dir
-        )
-        proc.wait()
-        print("\n[Antigravity CLI] Coding task execution completed.")
-        speak("Coding task completed. Review git diffs on the dashboard.")
-    except Exception as e:
-        print(f"\n[Antigravity CLI] Error executing task: {e}")
-        speak("An error occurred while executing the Antigravity coding task.")
+    if agent_manager:
+        agent_manager.start_session("antigravity", prompt=prompt, cwd=project_dir)
 
 # Maintain backwards compatibility
 run_opencode_with_diff = run_antigravity_coding_task
+
 
 print("Loading Piper TTS Voice into Memory...")
 piper_voice = PiperVoice.load("en_US-lessac-medium.onnx")
@@ -321,6 +306,11 @@ def listen_for_command():
         while True:
             chunk_int16 = audio_q.get()
             
+            if tts_lock.locked():
+                # Prevent the assistant from hearing its own TTS output
+                pre_speech_ring.clear()
+                continue
+
             # Resample to 16kHz for VAD and Whisper
             if native_sr != TARGET_SR:
                 chunk_bytes, state_ratecv = audioop.ratecv(chunk_int16.tobytes(), 2, 1, native_sr, TARGET_SR, state_ratecv)
@@ -403,10 +393,11 @@ def speak(text):
         stream.stop()
         stream.close()
 
-# ============================================================
-# 4. THE MAIN PIPELINE
-# ============================================================
 def main_loop():
+    global agent_manager
+    agent_manager = AgentManager(on_speech=speak)
+    parser_type = "GroqCloud LPU" if isinstance(agent_manager.parser, GroqTerminalParser) else "Regex Fallback"
+    print(f"[Agent Adapter] Active Parser: {parser_type}")
     speak(f"JARVIS online. Active model is {ACTIVE_MODEL}.")
     
     # Start Code Review UI server in background
@@ -430,9 +421,20 @@ def main_loop():
                 
             print(f"\nYou: {transcript}")
 
-            # Intent Classification
+            # 1. Route voice input directly to active agent session if running
+            if agent_manager and agent_manager.has_active_session():
+                active_cli = agent_manager.active_session.cli_name
+                print(f"[Active Agent Session: {active_cli}] Piping voice input to stdin: '{transcript}'")
+                agent_manager.send_input(transcript)
+                continue
+
+            # 2. Intent Classification for ambient mode
             is_thinking_task, mode_key = determine_intent(transcript)
             print(f"[Router: {mode_key.upper()} | Model: {ACTIVE_MODEL}]")
+
+            if mode_key == "code":
+                run_antigravity_coding_task(transcript)
+                continue
 
             # Dynamic System Prompt Selection
             messages = [
@@ -441,10 +443,6 @@ def main_loop():
             ]
 
             print("JARVIS: ", end="", flush=True)
-            
-            if mode_key == "code":
-                threading.Thread(target=run_antigravity_coding_task, args=(transcript,)).start()
-                continue
             
             # Standard Ollama Streaming
             t_req = time.perf_counter()
