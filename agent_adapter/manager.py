@@ -6,6 +6,14 @@ from .parsers.groq_parser import GroqTerminalParser
 from .parsers.fallback_parser import RegexFallbackParser
 from .sessions.cli_session import CLIAgentSession
 
+from verifier.use_cases.coordinator import ReviewSessionCoordinator
+from verifier.adapters.engines.factory import DiffEngineFactory
+from verifier.adapters.presenters.composite import MultiPresenterComposite
+from verifier.adapters.presenters.tts_presenter import TTSPresenter
+from verifier.adapters.presenters.desktop_hud import DesktopHUDPresenter
+from verifier.adapters.presenters.mobile_ws_presenter import MobileWSPresenter
+from verifier.adapters.input.voice_grammar import ReviewVoiceGrammar
+
 
 def default_antigravity_cmd(prompt: str, cwd: str, is_continuation: bool = False) -> List[str]:
     agy_bin = shutil.which("agy") or os.path.expandvars(r"%LOCALAPPDATA%\agy\bin\agy.exe")
@@ -47,6 +55,12 @@ class AgentManager:
         self.on_speech = on_speech
         self.active_session: Optional[CLIAgentSession] = None
         self._cli_registry: Dict[str, Callable[[str, str, bool], List[str]]] = {}
+        self._is_reviewing = False
+
+        # ── Verifier subsystem setup ──
+        self.review_coordinator: Optional[ReviewSessionCoordinator] = None
+        self.mobile_presenter = MobileWSPresenter()
+        self.voice_grammar: Optional[ReviewVoiceGrammar] = None
 
         # Register default CLIs
         self.register_cli("antigravity", default_antigravity_cmd)
@@ -83,6 +97,21 @@ class AgentManager:
         working_dir = cwd or os.path.dirname(os.path.abspath(__file__))
         cmd = self._cli_registry[cli_key](prompt, working_dir, is_continuation)
 
+        # ── Capture baseline for diff verification before agent runs ──
+        if not is_continuation:
+            try:
+                diff_engine = DiffEngineFactory.create(working_dir)
+                tts_presenter = TTSPresenter(on_speech=self.on_speech)
+                hud_presenter = DesktopHUDPresenter(on_command=self._on_hud_command)
+                composite = MultiPresenterComposite([tts_presenter, hud_presenter, self.mobile_presenter])
+                self.review_coordinator = ReviewSessionCoordinator(diff_engine, composite)
+                self.voice_grammar = ReviewVoiceGrammar(coordinator=self.review_coordinator)
+                self.review_coordinator.start_session(working_dir)
+                print(f"[AgentManager] Baseline captured for diff verification in {working_dir}")
+            except Exception as e:
+                print(f"[AgentManager] Warning: Could not capture baseline: {e}")
+                self.review_coordinator = None
+
         session = CLIAgentSession(
             command=cmd,
             cwd=working_dir,
@@ -95,8 +124,20 @@ class AgentManager:
         session.start()
         return session
 
+    @property
+    def is_reviewing(self) -> bool:
+        """Returns True if a diff review session is currently active."""
+        return self._is_reviewing
+
     def send_input(self, text: str) -> None:
-        """Routes human voice input to the currently active CLI session."""
+        """Routes human voice input to the active CLI session or review coordinator."""
+
+        # ── If in diff review mode, route voice to the review grammar ──
+        if self._is_reviewing and self.voice_grammar:
+            print(f"[AgentManager] Routing voice to review grammar: '{text}'")
+            self.voice_grammar.handle_voice_command(text)
+            return
+
         if not self.active_session:
             print("[AgentManager] No active session to receive input.")
             return
@@ -119,13 +160,54 @@ class AgentManager:
             self.active_session.stop()
             self.active_session = None
 
+    def _on_hud_command(self, action: str, hunk_id: Optional[str]) -> None:
+        """Callback from the Desktop HUD for keyboard/mouse actions."""
+        if not self.review_coordinator:
+            return
+        if action == "accept" and hunk_id:
+            self.review_coordinator.accept_hunk(hunk_id)
+        elif action == "reject" and hunk_id:
+            self.review_coordinator.reject_hunk(hunk_id)
+        elif action == "accept_all":
+            self.review_coordinator.accept_all()
+            self._finish_review()
+        elif action == "reject_all":
+            self.review_coordinator.reject_all()
+            self._finish_review()
+        elif action == "explain" and hunk_id:
+            self.review_coordinator.explain_hunk(hunk_id)
+        elif action == "skip":
+            self.review_coordinator.skip_hunk()
+
+        # Check if review completed after hunk-level actions
+        if self.review_coordinator and not self.review_coordinator.active_session:
+            self._finish_review()
+
     def _on_session_finished(self, was_waiting_for_input: bool = False) -> None:
-        """Internal callback invoked when a session exits."""
+        """Internal callback invoked when a CLI agent session exits."""
         if was_waiting_for_input:
             # We purposefully do not reset the active_session or announce finish
             return
 
-        print("[AgentManager] Session ended. Restoring ambient voice mode.")
-        if self.on_speech:
-            self.on_speech("Coding task has finished. Returning to voice assistant mode.")
         self.active_session = None
+
+        # ── Trigger diff verification ──
+        if self.review_coordinator:
+            print("[AgentManager] Agent session ended. Starting diff verification...")
+            self._is_reviewing = True
+            self.review_coordinator.trigger_review()
+
+            # If no changes were found, trigger_review already completed the session
+            if not self.review_coordinator.active_session:
+                self._finish_review()
+        else:
+            print("[AgentManager] Session ended. Restoring ambient voice mode.")
+            if self.on_speech:
+                self.on_speech("Coding task has finished. Returning to voice assistant mode.")
+
+    def _finish_review(self) -> None:
+        """Clean up review state and return to ambient mode."""
+        self._is_reviewing = False
+        self.review_coordinator = None
+        self.voice_grammar = None
+        print("[AgentManager] Diff review complete. Returning to ambient voice mode.")

@@ -1,5 +1,5 @@
 import os
-from ..ports.diff_engine import IDiffEnginePort
+from ...ports.diff_engine import IDiffEnginePort
 
 class DiffEngineFactory:
     @staticmethod

@@ -400,12 +400,50 @@ def main_loop():
     print(f"[Agent Adapter] Active Parser: {parser_type}")
     speak(f"JARVIS online. Active model is {ACTIVE_MODEL}.")
     
-    # Start Code Review UI server in background
-    def start_ui():
-        print("[JARVIS] Starting Code Review UI server on http://127.0.0.1:8000")
-        uvicorn.run("ui_server:app", host="127.0.0.1", port=8000, log_level="error")
+    # Start Code Review Gateway server in background (REST + WebSocket for mobile)
+    def start_gateway():
+        from fastapi import FastAPI
+        from verifier.adapters.gateway.api_router import create_review_router, create_mobile_app_router
+
+        gateway_app = FastAPI(title="JARVIS Code Review Gateway")
+
+        # The coordinator is created per-session inside AgentManager,
+        # but we need a reference for the API router. We use a lazy proxy.
+        class CoordinatorProxy:
+            @property
+            def active_session(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    return agent_manager.review_coordinator.active_session
+                return None
+            def accept_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.accept_hunk(hunk_id)
+            def reject_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.reject_hunk(hunk_id)
+            def accept_all(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.accept_all()
+            def reject_all(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.reject_all()
+            def skip_hunk(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.skip_hunk()
+            def explain_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.explain_hunk(hunk_id)
+
+        proxy = CoordinatorProxy()
+        review_router = create_review_router(proxy, agent_manager.mobile_presenter)
+        mobile_router = create_mobile_app_router()
+        gateway_app.include_router(review_router)
+        gateway_app.include_router(mobile_router)
+
+        print("[JARVIS] Starting Code Review Gateway on http://127.0.0.1:8000")
+        uvicorn.run(gateway_app, host="127.0.0.1", port=8000, log_level="error")
     
-    threading.Thread(target=start_ui, daemon=True).start()
+    threading.Thread(target=start_gateway, daemon=True).start()
     
     while True:
         try:
@@ -421,7 +459,13 @@ def main_loop():
                 
             print(f"\nYou: {transcript}")
 
-            # 1. Route voice input directly to active agent session if running
+            # 1. Route voice to diff review if a review session is active
+            if agent_manager and agent_manager.is_reviewing:
+                print(f"[Diff Review] Routing voice to review grammar: '{transcript}'")
+                agent_manager.send_input(transcript)
+                continue
+
+            # 2. Route voice input directly to active agent session if running
             if agent_manager and agent_manager.has_active_session():
                 active_cli = agent_manager.active_session.cli_name
                 print(f"[Active Agent Session: {active_cli}] Piping voice input to stdin: '{transcript}'")
