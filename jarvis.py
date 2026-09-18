@@ -68,9 +68,9 @@ def run_agy_with_diff(prompt: str):
         print("[Error] agy CLI not found in PATH.")
         return
         
-    print("[Antigravity] Running Antigravity CLI...")
+    print("[Antigravity] Running Antigravity CLI with Gemini 3.1 Pro (High)...")
     proc = subprocess.Popen(
-        [agy_path, "--prompt", prompt, "--dangerously-skip-permissions"],
+        [agy_path, "--prompt", prompt, "--model", "gemini-3.1-pro-high", "--dangerously-skip-permissions"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
