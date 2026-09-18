@@ -300,6 +300,35 @@ def listen_for_command():
     is_speaking = False
     silence_start_time = None
     state_ratecv = None
+    
+    # Speed A: Streaming STT overlapping
+    live_transcript = ""
+    last_transcribe_len = 0
+    stt_lock = threading.Lock()
+    
+    def live_transcribe_worker():
+        nonlocal live_transcript, last_transcribe_len
+        while True:
+            time.sleep(1.0)
+            with stt_lock:
+                if not is_speaking and silence_start_time and (time.perf_counter() - silence_start_time) > PAUSE_TOLERANCE_SEC:
+                    break
+                current_len = len(voiced_chunks)
+            
+            if current_len > last_transcribe_len and current_len > 10:
+                # Take snapshot and transcribe
+                with stt_lock:
+                    snapshot = list(voiced_chunks)
+                audio_np = np.concatenate(snapshot, axis=0).astype(np.float32) / 32768.0
+                try:
+                    segments, _ = stt_model.transcribe(audio_np, beam_size=1)
+                    with stt_lock:
+                        live_transcript = "".join([s.text for s in segments]).strip()
+                        last_transcribe_len = current_len
+                except Exception:
+                    pass
+
+    transcribe_thread = threading.Thread(target=live_transcribe_worker, daemon=True)
 
     with sd.InputStream(device=device_id, samplerate=native_sr, channels=1, dtype='int16', 
                         blocksize=NATIVE_CHUNK, callback=mic_callback):
@@ -337,27 +366,32 @@ def listen_for_command():
             state = ort_outs[1]
 
             if speech_prob >= SPEECH_PROB_THRESHOLD:
-                if not is_speaking:
-                    is_speaking = True
-                    # Prepend buffered audio so first syllable is never lost
-                    voiced_chunks.extend(pre_speech_ring)
-                    pre_speech_ring.clear()
-                
-                voiced_chunks.append(chunk_16k)
-                silence_start_time = None  # Reset silence timer while talking
-            else:
-                if is_speaking:
+                with stt_lock:
+                    if not is_speaking:
+                        is_speaking = True
+                        if not transcribe_thread.is_alive():
+                            transcribe_thread.start()
+                        # Prepend buffered audio so first syllable is never lost
+                        voiced_chunks.extend(pre_speech_ring)
+                        pre_speech_ring.clear()
+                    
                     voiced_chunks.append(chunk_16k)
-                    if silence_start_time is None:
-                        silence_start_time = time.perf_counter()
-                    elif time.perf_counter() - silence_start_time >= PAUSE_TOLERANCE_SEC:
-                        # User took a full 1.6s pause after speaking: turn is complete
-                        break
-                else:
-                    pre_speech_ring.append(chunk_16k)
+                    silence_start_time = None  # Reset silence timer while talking
+            else:
+                with stt_lock:
+                    if is_speaking:
+                        voiced_chunks.append(chunk_16k)
+                        if silence_start_time is None:
+                            silence_start_time = time.perf_counter()
+                        elif time.perf_counter() - silence_start_time >= PAUSE_TOLERANCE_SEC:
+                            # User took a full 1.6s pause after speaking: turn is complete
+                            break
+                    else:
+                        pre_speech_ring.append(chunk_16k)
 
     # Convert collected 16-bit PCM chunks and export to temp.wav
-    all_audio = np.concatenate(voiced_chunks, axis=0)
+    with stt_lock:
+        all_audio = np.concatenate(voiced_chunks, axis=0)
 
     with wave.open("temp.wav", "wb") as wf:
         wf.setnchannels(1)
@@ -365,7 +399,7 @@ def listen_for_command():
         wf.setframerate(TARGET_SR)
         wf.writeframes(all_audio.tobytes())
 
-    return "temp.wav"
+    return "temp.wav", live_transcript
 
 def speak(text):
     """In-memory TTS playback: synthesizes to RAM and writes directly to sound card."""
@@ -447,7 +481,7 @@ def main_loop():
     
     while True:
         try:
-            audio_file = listen_for_command()
+            audio_file, live_transcript = listen_for_command()
             t0 = time.perf_counter()
             
             # Optimistic Acknowledgment (UX A)
@@ -462,9 +496,12 @@ def main_loop():
                     pass
             threading.Thread(target=play_chime, daemon=True).start()
             
-            # STT
-            segments, _ = stt_model.transcribe(audio_file, beam_size=5)
-            transcript = "".join([segment.text for segment in segments]).strip()
+            # STT - Use live transcript if available to save time
+            if live_transcript.strip():
+                transcript = live_transcript.strip()
+            else:
+                segments, _ = stt_model.transcribe(audio_file, beam_size=5)
+                transcript = "".join([segment.text for segment in segments]).strip()
             
             if not transcript:
                 continue
