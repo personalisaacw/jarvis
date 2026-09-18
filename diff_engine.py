@@ -9,19 +9,17 @@ DIFFS_FILE = "diffs.json"
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def get_target_files():
-    """Returns a list of files to track changes for."""
+    """Returns a list of relative file paths to track changes for."""
     exts = {".py", ".json", ".md", ".txt", ".js", ".ts", ".jsx", ".tsx", ".yaml", ".yml", ".bat", ".ini", ".cfg"}
     files = []
     for root, dirs, filenames in os.walk(PROJECT_DIR):
-        if ".backup" in root:
-            continue
-        if "__pycache__" in root:
-            continue
-        if "venv" in root:
+        if ".backup" in root or "__pycache__" in root or "venv" in root or ".venv" in root or ".git" in root:
             continue
         for f in filenames:
             if os.path.splitext(f)[1].lower() in exts:
-                files.append(os.path.join(root, f))
+                full_path = os.path.join(root, f)
+                rel_path = os.path.relpath(full_path, PROJECT_DIR)
+                files.append(rel_path)
     return sorted(files)
 
 def backup_files():
@@ -30,9 +28,9 @@ def backup_files():
     if os.path.exists(backup_path):
         shutil.rmtree(backup_path)
     os.makedirs(backup_path, exist_ok=True)
-    for filepath in get_target_files():
-        full_path = os.path.join(PROJECT_DIR, filepath)
-        backup_full_path = os.path.join(backup_path, filepath)
+    for relpath in get_target_files():
+        full_path = os.path.join(PROJECT_DIR, relpath)
+        backup_full_path = os.path.join(backup_path, relpath)
         os.makedirs(os.path.dirname(backup_full_path), exist_ok=True)
         shutil.copy2(full_path, backup_full_path)
     print(f"[Diff Engine] Backup created at {BACKUP_DIR}/")
@@ -41,9 +39,9 @@ def compute_diffs():
     """Computes unified diffs between BACKUP_DIR and current project."""
     all_diffs = []
     backup_path = os.path.join(PROJECT_DIR, BACKUP_DIR)
-    for filepath in get_target_files():
-        backup_file = os.path.join(backup_path, filepath)
-        current_file = os.path.join(PROJECT_DIR, filepath)
+    for relpath in get_target_files():
+        backup_file = os.path.join(backup_path, relpath)
+        current_file = os.path.join(PROJECT_DIR, relpath)
         if not os.path.exists(backup_file):
             continue
         with open(backup_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -54,14 +52,14 @@ def compute_diffs():
         if backup_lines != current_lines:
             diff = difflib.unified_diff(
                 backup_lines, current_lines,
-                fromfile=f"backup/{filepath}",
-                tofile=filepath,
+                fromfile=f"backup/{relpath}",
+                tofile=relpath,
                 lineterm=""
             )
             diff_text = "\n".join(diff)
             if diff_text.strip():
                 all_diffs.append({
-                    "file": filepath,
+                    "file": relpath,
                     "diff": diff_text,
                     "timestamp": time.time()
                 })
