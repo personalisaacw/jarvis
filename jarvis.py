@@ -115,7 +115,14 @@ def determine_intent(text: str):
     return result
 
 
+speaking_condition = threading.Condition()
+speaking_threads_count = 0
+
 def listen_for_command():
+    with speaking_condition:
+        while speaking_threads_count > 0:
+            speaking_condition.wait()
+            
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
         print("\nListening...")
@@ -132,25 +139,35 @@ def speak(text):
     if not cleaned:
         return
         
-    with tts_lock:
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, 'wb') as wav_file:
-            piper_voice.synthesize_wav(cleaned, wav_file)
-            
-        wav_io.seek(0)
-        with wave.open(wav_io, 'rb') as wav_file:
-            raw_audio = wav_file.readframes(wav_file.getnframes())
-            int_data = np.frombuffer(raw_audio, dtype=np.int16)
-            
-        stream = sd.OutputStream(
-            samplerate=piper_voice.config.sample_rate, 
-            channels=1, 
-            dtype='int16'
-        )
-        stream.start()
-        stream.write(int_data)
-        stream.stop()
-        stream.close()
+    global speaking_threads_count
+    with speaking_condition:
+        speaking_threads_count += 1
+        
+    try:
+        with tts_lock:
+            wav_io = io.BytesIO()
+            with wave.open(wav_io, 'wb') as wav_file:
+                piper_voice.synthesize_wav(cleaned, wav_file)
+                
+            wav_io.seek(0)
+            with wave.open(wav_io, 'rb') as wav_file:
+                raw_audio = wav_file.readframes(wav_file.getnframes())
+                int_data = np.frombuffer(raw_audio, dtype=np.int16)
+                
+            stream = sd.OutputStream(
+                samplerate=piper_voice.config.sample_rate, 
+                channels=1, 
+                dtype='int16'
+            )
+            stream.start()
+            stream.write(int_data)
+            stream.stop()
+            stream.close()
+    finally:
+        with speaking_condition:
+            speaking_threads_count -= 1
+            if speaking_threads_count == 0:
+                speaking_condition.notify_all()
 
 # ============================================================
 # 4. THE MAIN PIPELINE
