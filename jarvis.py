@@ -62,11 +62,18 @@ def run_opencode_with_diff(prompt: str):
     print("[OpenCode] Starting coding task and backing up files...")
     diff_engine.backup_files()
     
+    import shutil
+    opencode_path = shutil.which("opencode")
+    if not opencode_path:
+        print("[Error] opencode CLI not found in PATH.")
+        return
+        
     print("[OpenCode] Running OpenCode CLI...")
     proc = subprocess.Popen(
-        ["opencode", "--prompt", prompt, "--auto"],
+        [opencode_path, "--prompt", prompt, "--auto"],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
+        shell=True  # Required on Windows for .cmd scripts without opening a detached console incorrectly
     )
     proc.wait()  # Wait for OpenCode to finish
     print("[OpenCode] OpenCode finished executing.")
