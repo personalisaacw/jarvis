@@ -56,32 +56,32 @@ feedback_use_case = LearnFromFeedbackUseCase(vector_store, embedding_engine)
 
 tts_lock = threading.Lock()
 
-def run_opencode_with_diff(prompt: str):
-    """Launches OpenCode, waits for it to finish, calculates diffs, and saves them."""
+def run_agy_with_diff(prompt: str):
+    """Launches Antigravity CLI, waits for it to finish, calculates diffs, and saves them."""
     import diff_engine
-    print("[OpenCode] Starting coding task and backing up files...")
+    print("[Antigravity] Starting coding task and backing up files...")
     diff_engine.backup_files()
     
     import shutil
-    opencode_path = shutil.which("opencode")
-    if not opencode_path:
-        print("[Error] opencode CLI not found in PATH.")
+    agy_path = shutil.which("agy")
+    if not agy_path:
+        print("[Error] agy CLI not found in PATH.")
         return
         
-    print("[OpenCode] Running OpenCode CLI...")
+    print("[Antigravity] Running Antigravity CLI...")
     proc = subprocess.Popen(
-        [opencode_path, "--prompt", prompt, "--auto"],
+        [agy_path, "--prompt", prompt, "--auto"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         shell=True  # Required on Windows for .cmd scripts without opening a detached console incorrectly
     )
-    proc.wait()  # Wait for OpenCode to finish
-    print("[OpenCode] OpenCode finished executing.")
+    proc.wait()  # Wait for Antigravity to finish
+    print("[Antigravity] Antigravity finished executing.")
     
     diffs = diff_engine.compute_diffs()
     diff_engine.save_diffs(diffs)
     
-    print(f"[OpenCode] Done. {len(diffs)} file(s) changed.")
+    print(f"[Antigravity] Done. {len(diffs)} file(s) changed.")
     speak(f"Coding task completed. You can review the changes on your code review dashboard.")
 
 print("Loading Piper TTS Voice into Memory...")
@@ -212,7 +212,7 @@ def main_loop():
             print("JARVIS: ", end="", flush=True)
             
             if mode_key == "code":
-                threading.Thread(target=run_opencode_with_diff, args=(transcript,)).start()
+                threading.Thread(target=run_agy_with_diff, args=(transcript,)).start()
                 continue
             
             # Standard Ollama Streaming

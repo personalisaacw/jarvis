@@ -119,13 +119,13 @@ async def proxy(request: Request, path: str):
                 )
                 
                 if route_name == "code":
-                    task_file = "C:\\OllamaThinkRouter\\opencode_task.md"
+                    task_file = "C:\\OllamaThinkRouter\\antigravity_task.md"
                     with open(task_file, "w", encoding="utf-8") as f:
-                        f.write(f"# Opencode Task\n\n- **Prompt**: {text}\n- **Created**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\nThis task was automatically routed from router.py proxy. Opencode, please analyze and implement this task.")
+                        f.write(f"# Antigravity Task\n\n- **Prompt**: {text}\n- **Created**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\nThis task was automatically routed from router.py proxy. Antigravity, please analyze and implement this task.")
                     
-                    print_audit_box("ROUTED TO OPENCODE", f"Task written to {task_file}")
+                    print_audit_box("ROUTED TO ANTIGRAVITY", f"Task written to {task_file}")
                     
-                    msg = f"[Opencode Router] This coding task has been successfully routed to Opencode for execution. Please check the 'opencode_task.md' file in your workspace."
+                    msg = f"[Antigravity Router] This coding task has been successfully routed to Antigravity CLI for execution. Please check the 'antigravity_task.md' file in your workspace."
                     
                     async def custom_stream():
                         if path == "api/chat":
