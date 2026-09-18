@@ -70,10 +70,9 @@ def run_agy_with_diff(prompt: str):
         
     print("[Antigravity] Running Antigravity CLI...")
     proc = subprocess.Popen(
-        [agy_path, "--prompt", prompt, "--auto"],
+        [agy_path, "--prompt", prompt, "--dangerously-skip-permissions"],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        shell=True  # Required on Windows for .cmd scripts without opening a detached console incorrectly
+        stderr=subprocess.DEVNULL
     )
     proc.wait()  # Wait for Antigravity to finish
     print("[Antigravity] Antigravity finished executing.")
