@@ -1,15 +1,19 @@
+<<<<<<< HEAD
+=======
 import os
 import shutil
 import subprocess
+>>>>>>> dev
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, Response
 import httpx
 import json
 import time
 
-# Import Semantic Router
-from semantic_router import Route, SemanticRouter
-from semantic_router.encoders import HuggingFaceEncoder
+from adapters.vector_store import FaissAdapter
+from adapters.embeddings import HuggingFaceAdapter
+from use_cases.routing import RouteCommandUseCase
+from domain.entities import Intent
 
 app = FastAPI()
 
@@ -24,9 +28,15 @@ QUICK_NUM_CTX = 4096
 THINKING_NUM_CTX = 8192
 
 # ============================================================
-# SEMANTIC ROUTER INITIALIZATION
+# ROUTER INITIALIZATION
 # ============================================================
 
+<<<<<<< HEAD
+print("[INIT] Loading Vector DB Router...")
+vector_store = FaissAdapter()
+embedding_engine = HuggingFaceAdapter()
+route_use_case = RouteCommandUseCase(vector_store, embedding_engine, fallback_threshold=0.30)
+=======
 print("[INIT] Loading Semantic Router on CPU...")
 encoder = HuggingFaceEncoder(name="sentence-transformers/all-MiniLM-L6-v2")
 
@@ -77,6 +87,7 @@ semantic_intent_router = SemanticRouter(
     auto_sync="local",
     aggregation="max"
 )
+>>>>>>> dev
 
 # ============================================================
 # AUDIT LOGGER HELPERS
@@ -92,11 +103,10 @@ def get_last_user_message(data: dict) -> str:
     return ""
 
 def determine_intent(text: str):
-    """Returns a tuple of (boolean_should_think, raw_route_object)"""
-    route = semantic_intent_router(text)
-    if route.name == "think":
-        return True, route
-    return False, route
+    """Returns a tuple of (boolean_should_think, intent_value)"""
+    result = route_use_case.execute(text)
+    should_think = (result.intent == Intent.THINK)
+    return should_think, result.intent.value
 
 def print_audit_box(title: str, content: str):
     """Prints a clean, boxed layout in the terminal for debugging."""
@@ -159,15 +169,16 @@ async def proxy(request: Request, path: str):
                 print_audit_box("2. EXTRACTED PROMPT", text)
                 
                 # 3. Analyze Intent
-                should_think, route_info = determine_intent(text)
+                should_think, route_name = determine_intent(text)
                 
                 print_audit_box(
-                    "3. SEMANTIC ROUTER DECISION", 
-                    f"Matched Route: {route_info.name if route_info.name else 'None (Fell back to QUICK)'}\n"
+                    "3. VECTOR DB ROUTER DECISION", 
+                    f"Matched Route: {route_name}\n"
                     f"Action: Setting think={should_think}\n"
                 )
                 
-                if route_info.name == "code":
+                if route_name == "code":
+                    import shutil, os, subprocess
                     agy_bin = shutil.which("agy") or os.path.expandvars(r"%LOCALAPPDATA%\agy\bin\agy.exe")
                     project_dir = "C:\\OllamaThinkRouter"
                     
@@ -176,13 +187,13 @@ async def proxy(request: Request, path: str):
                             [
                                 agy_bin,
                                 "-p", text,
-                                "--model", "gpt-oss-120b-medium",
+                                "--model", "gemini-3.1-pro-high",
                                 "--dangerously-skip-permissions"
                             ],
                             cwd=project_dir
                         )
-                        print_audit_box("ROUTED TO ANTIGRAVITY CLI", f"Executing Antigravity CLI with gpt-oss-120b-medium for prompt:\n{text}")
-                        msg = f"[Antigravity Router] Coding task has been routed to Antigravity CLI (model: gpt-oss-120b-medium). Changes can be reviewed on the dashboard."
+                        print_audit_box("ROUTED TO ANTIGRAVITY CLI", f"Executing Antigravity CLI with gemini-3.1-pro-high for prompt:\n{text}")
+                        msg = f"[Antigravity Router] Coding task has been routed to Antigravity CLI (model: gemini-3.1-pro-high). Changes can be reviewed on the dashboard."
                     except Exception as e:
                         print_audit_box("ANTIGRAVITY CLI ERROR", str(e))
                         msg = f"[Antigravity Router] Failed to launch Antigravity CLI: {e}"

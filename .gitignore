@@ -6,4 +6,7 @@ __pycache__/
 *.wav
 .agent/
 .opencode/
+.jarvis/
 diffs.json
+.env
+.vectorstore/

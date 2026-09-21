@@ -1,4 +1,8 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import shutil
 import re
 import time
@@ -18,6 +22,8 @@ from semantic_router import Route, SemanticRouter
 from semantic_router.encoders import HuggingFaceEncoder
 from piper.voice import PiperVoice
 import ollama
+from typing import Optional
+from agent_adapter import AgentManager, GroqTerminalParser, RegexFallbackParser
 
 # ============================================================
 # SILERO VAD INITIALIZATION (CPU - ONNX)
@@ -68,100 +74,34 @@ CODING_VOCAB_PROMPT = (
 print("Loading Whisper STT on CPU...")
 stt_model = WhisperModel("base.en", device="cpu", compute_type="int8")
 
-print("Loading Semantic Router on CPU...")
-encoder = HuggingFaceEncoder(name="sentence-transformers/all-MiniLM-L6-v2")
+from adapters.vector_store import FaissAdapter
+from adapters.embeddings import HuggingFaceAdapter
+from use_cases.routing import RouteCommandUseCase, LearnFromFeedbackUseCase
+from domain.entities import Intent
 
-quick_route = Route(
-    name="jarvis_quick", # Changed to bypass stale cache
-    utterances=[
-        "what time is it", 
-        "who is the president of france",
-        "turn off the living room lights",
-        "what is the weather like",
-        "define a hashmap in one sentence"
-    ]
-)
+print("Loading New Router Architecture...")
+vector_store = FaissAdapter()
+embedding_engine = HuggingFaceAdapter()
+route_use_case = RouteCommandUseCase(vector_store, embedding_engine, fallback_threshold=0.30)
+feedback_use_case = LearnFromFeedbackUseCase(vector_store, embedding_engine)
 
-thinking_route = Route(
-    name="jarvis_think", # Changed to bypass stale cache
-    score_threshold=0.45,
-    utterances=[
-        "design a scalable architecture", 
-        "analyze this concept and explain the trade-offs",
-        "plan a detailed travel itinerary",
-        "explain the logic of backpropagation",
-        "compare relational and document databases",
-        "walk me through the steps to solve this",
-        "break down how this works",
-        "what is the deep reasoning behind this"
-    ]
-)
-
-code_route = Route(
-    name="jarvis_code",
-    score_threshold=0.45,
-    utterances=[
-        "write a python script to list files",
-        "implement a new feature in my project",
-        "fix the bug in router.py",
-        "build a flask api",
-        "refactor the authentication logic",
-        "write a javascript function to sort an array",
-        "create a new react component",
-        "write code for sorting an array",
-        "develop a coding solution",
-        "help me refactor some functions",
-        "write a code script",
-        "add a feature to the codebase",
-        "code a feature",
-        "code a new feature",
-        "implement a new coding feature",
-        "help me write code",
-        "write a readme file for my repo",
-        "create a new branch and commit the changes",
-        "push the newest code to our repository"
-    ]
-)
-
-router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, code_route], auto_sync="local", aggregation="max")
 tts_lock = threading.Lock()
 
-ANTIGRAVITY_CODING_MODEL = "gemini-3.8-flash-medium"
+ANTIGRAVITY_CODING_MODEL = "gemini-3.1-pro-high"
+agent_manager = None
 
 def run_antigravity_coding_task(prompt: str):
-    """Launches Antigravity CLI with GPT OSS model to implement the coding task."""
-    print(f"\n[Antigravity CLI] Running coding task with model '{ANTIGRAVITY_CODING_MODEL}'...")
+    """Launches Antigravity CLI via AgentManager."""
+    print(f"\n[Antigravity CLI] Running coding task via AgentManager...")
     print(f"[Antigravity CLI] Prompt: '{prompt}'")
-    speak("I am on it. Directing the coding task to Antigravity.")
-    
-    agy_bin = shutil.which("agy") or os.path.expandvars(r"%LOCALAPPDATA%\agy\bin\agy.exe")
-    if not (shutil.which("agy") or os.path.exists(agy_bin)):
-        print(f"[Antigravity CLI] Error: agy binary not found at {agy_bin}")
-        speak("Error: Antigravity CLI binary was not found.")
-        return
-
+    threading.Thread(target=speak, args=("I am on it. Directing the coding task to Antigravity.",), daemon=True).start()
     project_dir = os.path.dirname(os.path.abspath(__file__))
-    cmd = [
-        agy_bin,
-        "-p", prompt,
-        "--model", ANTIGRAVITY_CODING_MODEL,
-        "--dangerously-skip-permissions"
-    ]
-    
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=project_dir
-        )
-        proc.wait()
-        print("\n[Antigravity CLI] Coding task execution completed.")
-        speak("Coding task completed. Review git diffs on the dashboard.")
-    except Exception as e:
-        print(f"\n[Antigravity CLI] Error executing task: {e}")
-        speak("An error occurred while executing the Antigravity coding task.")
+    if agent_manager:
+        agent_manager.start_session("antigravity", prompt=prompt, cwd=project_dir)
 
 # Maintain backwards compatibility
 run_opencode_with_diff = run_antigravity_coding_task
+
 
 print("Loading Piper TTS Voice into Memory...")
 piper_voice = PiperVoice.load("en_US-lessac-medium.onnx")
@@ -174,71 +114,29 @@ def clean_for_speech(text: str) -> str:
     text = re.sub(r'[*#_`~>]', '', text)
     return text.strip()
 
-def get_raw_audit_scores(clean_text: str) -> dict:
-    """Manually calculates the exact cosine similarity BEFORE routing occurs."""
-    try:
-        # 1. Convert the incoming text into a mathematical vector
-        query_vec = np.array(encoder([clean_text])[0])
-        scores = {}
-        
-        # 2. Calculate the math against our three routes
-        for r in [quick_route, thinking_route, code_route]:
-            route_vecs = np.array(encoder(r.utterances))
-            
-            # Cosine similarity formula
-            norms = np.linalg.norm(route_vecs, axis=1) * np.linalg.norm(query_vec)
-            sims = np.dot(route_vecs, query_vec) / norms
-            
-            # Grab the highest scoring utterance in the route
-            scores[r.name] = float(np.max(sims))
-            
-        return scores
-    except Exception as e:
-        print(f"│  * (Audit Math Error: {e})")
-        return {}
-
 def determine_intent(text: str):
     """
-    Evaluates semantic intent, prints a detailed math audit box, 
-    and returns (is_thinking_task, mode_key).
+    Evaluates semantic intent using the new Vector DB UseCase.
     """
-    # 1. Normalize text (remove punctuation, lowercase) to maximize match accuracy
     clean_text = re.sub(r'[^\w\s]', '', text).lower()
     
-    # 2. Print the Audit Box Header
-    print("\n┌── [SEMANTIC ROUTER AUDIT] " + "─" * 30)
+    print("\n┌── [VECTOR DB ROUTER AUDIT] " + "─" * 30)
     print(f"│ Spoken:  '{text}'")
     print(f"│ Cleaned: '{clean_text}'")
-    print(f"├─ [Pre-Routing Calculated Scores]")
     
-    # 3. Fetch raw scores manually BEFORE the library applies thresholds
-    raw_scores = get_raw_audit_scores(clean_text)
-    if raw_scores:
-        for r_name, score in raw_scores.items():
-            print(f"│  * Route '{r_name}': {score:.4f}")
-    else:
-        print(f"│  * (Could not compute raw scores)")
-            
+    result = route_use_case.execute(clean_text)
+    
     print(f"├─ [Final Decision]")
-    
-    # 4. Now send it to the router library for the final decision
-    route = router(clean_text)
-    
-    # 5. Safely handle the route object (it will be None if below threshold)
-    matched_name = getattr(route, 'name', None)
-    
-    if matched_name:
-        print(f"│  Selected Route: {matched_name}")
-    else:
-        print(f"│  Selected Route: NONE (Defaulting to QUICK)")
-        
+    print(f"│  Selected Route: {result.intent.value.upper()}")
+    print(f"│  Confidence: {result.confidence_score:.4f}")
+    print(f"│  Clarification Needed: {result.requires_clarification}")
     print("└" + "─" * 58 + "\n")
     
-    if matched_name == "jarvis_think":
-        return True, "think"
-    if matched_name == "jarvis_code":
-        return False, "code"
-    return False, "quick"
+    return result
+
+
+speaking_condition = threading.Condition()
+speaking_threads_count = 0
 
 def get_preferred_microphone():
     """Finds Yeti or AirPods microphone, otherwise falls back to default."""
@@ -273,13 +171,19 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     import audioop
 
-def listen_for_command():
+import msvcrt
+
+def listen_for_command(allow_keyboard: bool = False):
     """
     Listens using Silero VAD running locally on ONNX Runtime.
     Tolerates cognitive pauses and outputs 16kHz WAV for Whisper.
     Captures at native mic sample rate and resamples in real-time to avoid driver distortion.
     Uses a 64-sample rolling context buffer required by Silero VAD v5.
     """
+    with speaking_condition:
+        while speaking_threads_count > 0:
+            speaking_condition.wait()
+            
     device_id = get_preferred_microphone()
     
     # Get native sample rate for the selected device
@@ -300,8 +204,8 @@ def listen_for_command():
 
     # Silero recurrent LSTM hidden states
     state = np.zeros((2, 1, 128), dtype=np.float32)
-    sample_rate_tensor = np.array(TARGET_SR, dtype=np.int64)
-    context = np.zeros(CONTEXT_SIZE, dtype=np.float32)  # Rolling context buffer
+    context = np.zeros((CONTEXT_SIZE,), dtype=np.float32)
+    sample_rate_tensor = np.array([TARGET_SR], dtype=np.int64)
 
     audio_q = queue.Queue()
 
@@ -309,18 +213,59 @@ def listen_for_command():
         audio_q.put(indata.copy())
 
     print(f"\nListening on Device {device_id} at {native_sr}Hz (Silero VAD)...")
+    if allow_keyboard:
+        print("[Press 1 for Quick, 2 for Think, 3 for Code]")
     
     pre_speech_ring = collections.deque(maxlen=PRE_BUFFER_CHUNKS)
     voiced_chunks = []
     is_speaking = False
     silence_start_time = None
     state_ratecv = None
+    
+    # Speed A: Streaming STT overlapping
+    live_transcript = ""
+    last_transcribe_len = 0
+    stt_lock = threading.Lock()
+    
+    def live_transcribe_worker():
+        nonlocal live_transcript, last_transcribe_len
+        while True:
+            time.sleep(1.0)
+            with stt_lock:
+                if not is_speaking and silence_start_time and (time.perf_counter() - silence_start_time) > PAUSE_TOLERANCE_SEC:
+                    break
+                current_len = len(voiced_chunks)
+            
+            if current_len > last_transcribe_len and current_len > 10:
+                # Take snapshot and transcribe
+                with stt_lock:
+                    snapshot = list(voiced_chunks)
+                audio_np = np.concatenate(snapshot, axis=0).astype(np.float32) / 32768.0
+                try:
+                    segments, _ = stt_model.transcribe(audio_np, beam_size=1)
+                    with stt_lock:
+                        live_transcript = "".join([s.text for s in segments]).strip()
+                        last_transcribe_len = current_len
+                except Exception:
+                    pass
+
+    transcribe_thread = threading.Thread(target=live_transcribe_worker, daemon=True)
 
     with sd.InputStream(device=device_id, samplerate=native_sr, channels=1, dtype='int16', 
                         blocksize=NATIVE_CHUNK, callback=mic_callback):
         while True:
             chunk_int16 = audio_q.get()
             
+            if allow_keyboard and msvcrt.kbhit():
+                char = msvcrt.getch().decode('utf-8', errors='ignore')
+                if char in ['1', '2', '3']:
+                    return "keyboard", char
+            
+            if tts_lock.locked():
+                # Prevent the assistant from hearing its own TTS output
+                pre_speech_ring.clear()
+                continue
+
             # Resample to 16kHz for VAD and Whisper
             if native_sr != TARGET_SR:
                 chunk_bytes, state_ratecv = audioop.ratecv(chunk_int16.tobytes(), 2, 1, native_sr, TARGET_SR, state_ratecv)
@@ -347,27 +292,32 @@ def listen_for_command():
             state = ort_outs[1]
 
             if speech_prob >= SPEECH_PROB_THRESHOLD:
-                if not is_speaking:
-                    is_speaking = True
-                    # Prepend buffered audio so first syllable is never lost
-                    voiced_chunks.extend(pre_speech_ring)
-                    pre_speech_ring.clear()
-                
-                voiced_chunks.append(chunk_16k)
-                silence_start_time = None  # Reset silence timer while talking
-            else:
-                if is_speaking:
+                with stt_lock:
+                    if not is_speaking:
+                        is_speaking = True
+                        if not transcribe_thread.is_alive():
+                            transcribe_thread.start()
+                        # Prepend buffered audio so first syllable is never lost
+                        voiced_chunks.extend(pre_speech_ring)
+                        pre_speech_ring.clear()
+                    
                     voiced_chunks.append(chunk_16k)
-                    if silence_start_time is None:
-                        silence_start_time = time.perf_counter()
-                    elif time.perf_counter() - silence_start_time >= PAUSE_TOLERANCE_SEC:
-                        # User took a full 1.6s pause after speaking: turn is complete
-                        break
-                else:
-                    pre_speech_ring.append(chunk_16k)
+                    silence_start_time = None  # Reset silence timer while talking
+            else:
+                with stt_lock:
+                    if is_speaking:
+                        voiced_chunks.append(chunk_16k)
+                        if silence_start_time is None:
+                            silence_start_time = time.perf_counter()
+                        elif time.perf_counter() - silence_start_time >= PAUSE_TOLERANCE_SEC:
+                            # User took a full 1.6s pause after speaking: turn is complete
+                            break
+                    else:
+                        pre_speech_ring.append(chunk_16k)
 
     # Convert collected 16-bit PCM chunks and export to temp.wav
-    all_audio = np.concatenate(voiced_chunks, axis=0)
+    with stt_lock:
+        all_audio = np.concatenate(voiced_chunks, axis=0)
 
     with wave.open("temp.wav", "wb") as wf:
         wf.setnchannels(1)
@@ -375,7 +325,7 @@ def listen_for_command():
         wf.setframerate(TARGET_SR)
         wf.writeframes(all_audio.tobytes())
 
-    return "temp.wav"
+    return "temp.wav", live_transcript
 
 def speak(text):
     """In-memory TTS playback: synthesizes to RAM and writes directly to sound card."""
@@ -383,56 +333,171 @@ def speak(text):
     if not cleaned:
         return
         
-    with tts_lock:
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, 'wb') as wav_file:
-            piper_voice.synthesize_wav(cleaned, wav_file)
-            
-        wav_io.seek(0)
-        with wave.open(wav_io, 'rb') as wav_file:
-            raw_audio = wav_file.readframes(wav_file.getnframes())
-            int_data = np.frombuffer(raw_audio, dtype=np.int16)
-            
-        stream = sd.OutputStream(
-            samplerate=piper_voice.config.sample_rate, 
-            channels=1, 
-            dtype='int16'
-        )
-        stream.start()
-        stream.write(int_data)
-        stream.stop()
-        stream.close()
+    global speaking_threads_count
+    with speaking_condition:
+        speaking_threads_count += 1
+        
+    try:
+        with tts_lock:
+            wav_io = io.BytesIO()
+            with wave.open(wav_io, 'wb') as wav_file:
+                piper_voice.synthesize_wav(cleaned, wav_file)
+                
+            wav_io.seek(0)
+            with wave.open(wav_io, 'rb') as wav_file:
+                raw_audio = wav_file.readframes(wav_file.getnframes())
+                int_data = np.frombuffer(raw_audio, dtype=np.int16)
+                
+            stream = sd.OutputStream(
+                samplerate=piper_voice.config.sample_rate, 
+                channels=1, 
+                dtype='int16'
+            )
+            stream.start()
+            stream.write(int_data)
+            stream.stop()
+            stream.close()
+    finally:
+        with speaking_condition:
+            speaking_threads_count -= 1
+            if speaking_threads_count == 0:
+                speaking_condition.notify_all()
 
-# ============================================================
-# 4. THE MAIN PIPELINE
-# ============================================================
 def main_loop():
+    global agent_manager
+    agent_manager = AgentManager(on_speech=speak)
+    parser_type = "GroqCloud LPU" if isinstance(agent_manager.parser, GroqTerminalParser) else "Regex Fallback"
+    print(f"[Agent Adapter] Active Parser: {parser_type}")
     speak(f"JARVIS online. Active model is {ACTIVE_MODEL}.")
     
-    # Start Code Review UI server in background
-    def start_ui():
-        print("[JARVIS] Starting Code Review UI server on http://127.0.0.1:8000")
-        uvicorn.run("ui_server:app", host="127.0.0.1", port=8000, log_level="error")
+    # Start Code Review Gateway server in background (REST + WebSocket for mobile)
+    def start_gateway():
+        from fastapi import FastAPI
+        from verifier.adapters.gateway.api_router import create_review_router, create_mobile_app_router
+
+        gateway_app = FastAPI(title="JARVIS Code Review Gateway")
+
+        # The coordinator is created per-session inside AgentManager,
+        # but we need a reference for the API router. We use a lazy proxy.
+        class CoordinatorProxy:
+            @property
+            def active_session(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    return agent_manager.review_coordinator.active_session
+                return None
+            def accept_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.accept_hunk(hunk_id)
+            def reject_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.reject_hunk(hunk_id)
+            def accept_all(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.accept_all()
+            def reject_all(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.reject_all()
+            def skip_hunk(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.skip_hunk()
+            def explain_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.explain_hunk(hunk_id)
+
+        proxy = CoordinatorProxy()
+        review_router = create_review_router(proxy, agent_manager.mobile_presenter)
+        mobile_router = create_mobile_app_router()
+        gateway_app.include_router(review_router)
+        gateway_app.include_router(mobile_router)
+
+        print("[JARVIS] Starting Code Review Gateway on http://127.0.0.1:8000")
+        uvicorn.run(gateway_app, host="127.0.0.1", port=8000, log_level="error")
     
-    threading.Thread(target=start_ui, daemon=True).start()
+    threading.Thread(target=start_gateway, daemon=True).start()
     
     while True:
         try:
-            audio_file = listen_for_command()
+            audio_file, live_transcript = listen_for_command()
             t0 = time.perf_counter()
             
-            # STT
-            segments, _ = stt_model.transcribe(audio_file, beam_size=5)
-            transcript = "".join([segment.text for segment in segments]).strip()
+            # Optimistic Acknowledgment (UX A)
+            def play_chime():
+                try:
+                    fs = 44100
+                    duration = 0.15
+                    t = np.linspace(0, duration, int(fs * duration), False)
+                    note = np.sin(880.0 * t * 2 * np.pi) * np.exp(-5 * t) * 0.1
+                    sd.play((note * 32767).astype(np.int16), samplerate=fs, blocking=False)
+                except:
+                    pass
+            threading.Thread(target=play_chime, daemon=True).start()
+            
+            # STT - Use live transcript if available to save time
+            if live_transcript.strip():
+                transcript = live_transcript.strip()
+            else:
+                segments, _ = stt_model.transcribe(audio_file, beam_size=5)
+                transcript = "".join([segment.text for segment in segments]).strip()
             
             if not transcript:
                 continue
                 
             print(f"\nYou: {transcript}")
 
-            # Intent Classification
-            is_thinking_task, mode_key = determine_intent(transcript)
+            # 1. Route voice to diff review if a review session is active
+            if agent_manager and agent_manager.is_reviewing:
+                print(f"[Diff Review] Routing voice to review grammar: '{transcript}'")
+                agent_manager.send_input(transcript)
+                continue
+
+            # 2. Route voice input directly to active agent session if running
+            if agent_manager and agent_manager.has_active_session():
+                active_cli = agent_manager.active_session.cli_name
+                print(f"[Active Agent Session: {active_cli}] Piping voice input to stdin: '{transcript}'")
+                agent_manager.send_input(transcript)
+                continue
+
+            # 3. Manual Route Confirmation (Training Mode)
+            # determine_intent is called just to log the current vector DB state
+            determine_intent(transcript)
+            
+            speak("Route to quick, think, or code?")
+            print("\n[Waiting for route confirmation (Say route name or press 1, 2, or 3)...]")
+            
+            audio_or_kb, live_transcript = listen_for_command(allow_keyboard=True)
+            
+            mode_key = None
+            if audio_or_kb == "keyboard":
+                if live_transcript == '1':
+                    mode_key = "quick"
+                elif live_transcript == '2':
+                    mode_key = "think"
+                elif live_transcript == '3':
+                    mode_key = "code"
+            else:
+                if live_transcript.strip():
+                    clarification = live_transcript.strip().lower()
+                else:
+                    cl_segments, _ = stt_model.transcribe(audio_or_kb, beam_size=5)
+                    clarification = "".join([s.text for s in cl_segments]).strip().lower()
+                
+                if "code" in clarification or "3" in clarification:
+                    mode_key = "code"
+                elif "think" in clarification or "2" in clarification:
+                    mode_key = "think"
+                else:
+                    mode_key = "quick"
+            
+            if mode_key:
+                print(f"[Learned new mapping: {mode_key.upper()}]")
+                feedback_use_case.execute(transcript, mode_key)
+            else:
+                mode_key = "quick"
             print(f"[Router: {mode_key.upper()} | Model: {ACTIVE_MODEL}]")
+
+            if mode_key == "code":
+                run_antigravity_coding_task(transcript)
+                continue
 
             # Dynamic System Prompt Selection
             messages = [
@@ -441,11 +506,7 @@ def main_loop():
             ]
 
             print("JARVIS: ", end="", flush=True)
-            
-            if mode_key == "code":
-                threading.Thread(target=run_antigravity_coding_task, args=(transcript,)).start()
-                continue
-            
+
             # Standard Ollama Streaming
             t_req = time.perf_counter()
             stream = ollama.chat(
