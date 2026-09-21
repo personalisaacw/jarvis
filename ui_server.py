@@ -47,10 +47,46 @@ async def accept_changes():
     return JSONResponse(content={"status": "Changes staged"})
 
 @app.post("/api/reject")
+async def reject_file(request: Request):
+    """Restores the file from backup, effectively rejecting the changes."""
+    data = await request.json()
+    file = data.get("file")
+    backup_path = os.path.join(PROJECT_DIR, BACKUP_DIR, file)
+    current_path = os.path.join(PROJECT_DIR, file)
+    if os.path.exists(backup_path):
+        import shutil
+        shutil.copy2(backup_path, current_path)
+        print(f"[UI] Rejected changes for {file}")
+    return JSONResponse(content={"status": "rejected"})
+
+@app.post("/api/reject_all")
 async def reject_changes():
     """Discard all working tree changes (reject)."""
     subprocess.run(["git", "checkout", "--", "."], cwd=PROJECT_DIR, timeout=30)
     return JSONResponse(content={"status": "Changes discarded"})
+
+@app.post("/api/feedback")
+async def receive_feedback(request: Request):
+    """Receives correct intent from the UI and adds it to the FAISS index."""
+    from adapters.vector_store import FaissAdapter
+    from adapters.embeddings import HuggingFaceAdapter
+    from use_cases.routing import LearnFromFeedbackUseCase
+    
+    data = await request.json()
+    text = data.get("text")
+    intent = data.get("intent")
+    
+    if text and intent:
+        vector_store = FaissAdapter()
+        embedding_engine = HuggingFaceAdapter()
+        feedback_uc = LearnFromFeedbackUseCase(vector_store, embedding_engine)
+        feedback_uc.execute(text, intent)
+        return JSONResponse(content={"status": "success", "message": "Learned new mapping"})
+    return JSONResponse(content={"status": "error", "message": "Missing text or intent"}, status_code=400)
+
+# ============================================================
+# UI SERVING
+# ============================================================
 
 @app.get("/")
 async def serve_ui(request: Request):

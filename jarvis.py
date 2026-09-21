@@ -74,66 +74,21 @@ CODING_VOCAB_PROMPT = (
 print("Loading Whisper STT on CPU...")
 stt_model = WhisperModel("base.en", device="cpu", compute_type="int8")
 
-print("Loading Semantic Router on CPU...")
-encoder = HuggingFaceEncoder(name="sentence-transformers/all-MiniLM-L6-v2")
+from adapters.vector_store import FaissAdapter
+from adapters.embeddings import HuggingFaceAdapter
+from use_cases.routing import RouteCommandUseCase, LearnFromFeedbackUseCase
+from domain.entities import Intent
 
-quick_route = Route(
-    name="jarvis_quick", # Changed to bypass stale cache
-    utterances=[
-        "what time is it", 
-        "who is the president of france",
-        "turn off the living room lights",
-        "what is the weather like",
-        "define a hashmap in one sentence"
-    ]
-)
+print("Loading New Router Architecture...")
+vector_store = FaissAdapter()
+embedding_engine = HuggingFaceAdapter()
+route_use_case = RouteCommandUseCase(vector_store, embedding_engine, fallback_threshold=0.30)
+feedback_use_case = LearnFromFeedbackUseCase(vector_store, embedding_engine)
 
-thinking_route = Route(
-    name="jarvis_think", # Changed to bypass stale cache
-    score_threshold=0.45,
-    utterances=[
-        "design a scalable architecture", 
-        "analyze this concept and explain the trade-offs",
-        "plan a detailed travel itinerary",
-        "explain the logic of backpropagation",
-        "compare relational and document databases",
-        "walk me through the steps to solve this",
-        "break down how this works",
-        "what is the deep reasoning behind this"
-    ]
-)
-
-code_route = Route(
-    name="jarvis_code",
-    score_threshold=0.45,
-    utterances=[
-        "write a python script to list files",
-        "implement a new feature in my project",
-        "fix the bug in router.py",
-        "build a flask api",
-        "refactor the authentication logic",
-        "write a javascript function to sort an array",
-        "create a new react component",
-        "write code for sorting an array",
-        "develop a coding solution",
-        "help me refactor some functions",
-        "write a code script",
-        "add a feature to the codebase",
-        "code a feature",
-        "code a new feature",
-        "implement a new coding feature",
-        "help me write code",
-        "write a readme file for my repo",
-        "create a new branch and commit the changes",
-        "push the newest code to our repository"
-    ]
-)
-
-router = SemanticRouter(encoder=encoder, routes=[quick_route, thinking_route, code_route], auto_sync="local", aggregation="max")
 tts_lock = threading.Lock()
 
-ANTIGRAVITY_CODING_MODEL = "gemini-3.8-flash-medium"
-agent_manager: Optional[AgentManager] = None
+ANTIGRAVITY_CODING_MODEL = "gemini-3.1-pro-high"
+agent_manager = None
 
 def run_antigravity_coding_task(prompt: str):
     """Launches Antigravity CLI via AgentManager."""
@@ -159,71 +114,29 @@ def clean_for_speech(text: str) -> str:
     text = re.sub(r'[*#_`~>]', '', text)
     return text.strip()
 
-def get_raw_audit_scores(clean_text: str) -> dict:
-    """Manually calculates the exact cosine similarity BEFORE routing occurs."""
-    try:
-        # 1. Convert the incoming text into a mathematical vector
-        query_vec = np.array(encoder([clean_text])[0])
-        scores = {}
-        
-        # 2. Calculate the math against our three routes
-        for r in [quick_route, thinking_route, code_route]:
-            route_vecs = np.array(encoder(r.utterances))
-            
-            # Cosine similarity formula
-            norms = np.linalg.norm(route_vecs, axis=1) * np.linalg.norm(query_vec)
-            sims = np.dot(route_vecs, query_vec) / norms
-            
-            # Grab the highest scoring utterance in the route
-            scores[r.name] = float(np.max(sims))
-            
-        return scores
-    except Exception as e:
-        print(f"│  * (Audit Math Error: {e})")
-        return {}
-
 def determine_intent(text: str):
     """
-    Evaluates semantic intent, prints a detailed math audit box, 
-    and returns (is_thinking_task, mode_key).
+    Evaluates semantic intent using the new Vector DB UseCase.
     """
-    # 1. Normalize text (remove punctuation, lowercase) to maximize match accuracy
     clean_text = re.sub(r'[^\w\s]', '', text).lower()
     
-    # 2. Print the Audit Box Header
-    print("\n┌── [SEMANTIC ROUTER AUDIT] " + "─" * 30)
+    print("\n┌── [VECTOR DB ROUTER AUDIT] " + "─" * 30)
     print(f"│ Spoken:  '{text}'")
     print(f"│ Cleaned: '{clean_text}'")
-    print(f"├─ [Pre-Routing Calculated Scores]")
     
-    # 3. Fetch raw scores manually BEFORE the library applies thresholds
-    raw_scores = get_raw_audit_scores(clean_text)
-    if raw_scores:
-        for r_name, score in raw_scores.items():
-            print(f"│  * Route '{r_name}': {score:.4f}")
-    else:
-        print(f"│  * (Could not compute raw scores)")
-            
+    result = route_use_case.execute(clean_text)
+    
     print(f"├─ [Final Decision]")
-    
-    # 4. Now send it to the router library for the final decision
-    route = router(clean_text)
-    
-    # 5. Safely handle the route object (it will be None if below threshold)
-    matched_name = getattr(route, 'name', None)
-    
-    if matched_name:
-        print(f"│  Selected Route: {matched_name}")
-    else:
-        print(f"│  Selected Route: NONE (Defaulting to QUICK)")
-        
+    print(f"│  Selected Route: {result.intent.value.upper()}")
+    print(f"│  Confidence: {result.confidence_score:.4f}")
+    print(f"│  Clarification Needed: {result.requires_clarification}")
     print("└" + "─" * 58 + "\n")
     
-    if matched_name == "jarvis_think":
-        return True, "think"
-    if matched_name == "jarvis_code":
-        return False, "code"
-    return False, "quick"
+    return result
+
+
+speaking_condition = threading.Condition()
+speaking_threads_count = 0
 
 def get_preferred_microphone():
     """Finds Yeti or AirPods microphone, otherwise falls back to default."""
@@ -258,13 +171,19 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     import audioop
 
-def listen_for_command():
+import msvcrt
+
+def listen_for_command(allow_keyboard: bool = False):
     """
     Listens using Silero VAD running locally on ONNX Runtime.
     Tolerates cognitive pauses and outputs 16kHz WAV for Whisper.
     Captures at native mic sample rate and resamples in real-time to avoid driver distortion.
     Uses a 64-sample rolling context buffer required by Silero VAD v5.
     """
+    with speaking_condition:
+        while speaking_threads_count > 0:
+            speaking_condition.wait()
+            
     device_id = get_preferred_microphone()
     
     # Get native sample rate for the selected device
@@ -285,8 +204,8 @@ def listen_for_command():
 
     # Silero recurrent LSTM hidden states
     state = np.zeros((2, 1, 128), dtype=np.float32)
-    sample_rate_tensor = np.array(TARGET_SR, dtype=np.int64)
-    context = np.zeros(CONTEXT_SIZE, dtype=np.float32)  # Rolling context buffer
+    context = np.zeros((CONTEXT_SIZE,), dtype=np.float32)
+    sample_rate_tensor = np.array([TARGET_SR], dtype=np.int64)
 
     audio_q = queue.Queue()
 
@@ -294,6 +213,8 @@ def listen_for_command():
         audio_q.put(indata.copy())
 
     print(f"\nListening on Device {device_id} at {native_sr}Hz (Silero VAD)...")
+    if allow_keyboard:
+        print("[Press 1 for Quick, 2 for Think, 3 for Code]")
     
     pre_speech_ring = collections.deque(maxlen=PRE_BUFFER_CHUNKS)
     voiced_chunks = []
@@ -334,6 +255,11 @@ def listen_for_command():
                         blocksize=NATIVE_CHUNK, callback=mic_callback):
         while True:
             chunk_int16 = audio_q.get()
+            
+            if allow_keyboard and msvcrt.kbhit():
+                char = msvcrt.getch().decode('utf-8', errors='ignore')
+                if char in ['1', '2', '3']:
+                    return "keyboard", char
             
             if tts_lock.locked():
                 # Prevent the assistant from hearing its own TTS output
@@ -407,25 +333,35 @@ def speak(text):
     if not cleaned:
         return
         
-    with tts_lock:
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, 'wb') as wav_file:
-            piper_voice.synthesize_wav(cleaned, wav_file)
-            
-        wav_io.seek(0)
-        with wave.open(wav_io, 'rb') as wav_file:
-            raw_audio = wav_file.readframes(wav_file.getnframes())
-            int_data = np.frombuffer(raw_audio, dtype=np.int16)
-            
-        stream = sd.OutputStream(
-            samplerate=piper_voice.config.sample_rate, 
-            channels=1, 
-            dtype='int16'
-        )
-        stream.start()
-        stream.write(int_data)
-        stream.stop()
-        stream.close()
+    global speaking_threads_count
+    with speaking_condition:
+        speaking_threads_count += 1
+        
+    try:
+        with tts_lock:
+            wav_io = io.BytesIO()
+            with wave.open(wav_io, 'wb') as wav_file:
+                piper_voice.synthesize_wav(cleaned, wav_file)
+                
+            wav_io.seek(0)
+            with wave.open(wav_io, 'rb') as wav_file:
+                raw_audio = wav_file.readframes(wav_file.getnframes())
+                int_data = np.frombuffer(raw_audio, dtype=np.int16)
+                
+            stream = sd.OutputStream(
+                samplerate=piper_voice.config.sample_rate, 
+                channels=1, 
+                dtype='int16'
+            )
+            stream.start()
+            stream.write(int_data)
+            stream.stop()
+            stream.close()
+    finally:
+        with speaking_condition:
+            speaking_threads_count -= 1
+            if speaking_threads_count == 0:
+                speaking_condition.notify_all()
 
 def main_loop():
     global agent_manager
@@ -521,8 +457,42 @@ def main_loop():
                 agent_manager.send_input(transcript)
                 continue
 
-            # 2. Intent Classification for ambient mode
-            is_thinking_task, mode_key = determine_intent(transcript)
+            # 3. Manual Route Confirmation (Training Mode)
+            # determine_intent is called just to log the current vector DB state
+            determine_intent(transcript)
+            
+            speak("Route to quick, think, or code?")
+            print("\n[Waiting for route confirmation (Say route name or press 1, 2, or 3)...]")
+            
+            audio_or_kb, live_transcript = listen_for_command(allow_keyboard=True)
+            
+            mode_key = None
+            if audio_or_kb == "keyboard":
+                if live_transcript == '1':
+                    mode_key = "quick"
+                elif live_transcript == '2':
+                    mode_key = "think"
+                elif live_transcript == '3':
+                    mode_key = "code"
+            else:
+                if live_transcript.strip():
+                    clarification = live_transcript.strip().lower()
+                else:
+                    cl_segments, _ = stt_model.transcribe(audio_or_kb, beam_size=5)
+                    clarification = "".join([s.text for s in cl_segments]).strip().lower()
+                
+                if "code" in clarification or "3" in clarification:
+                    mode_key = "code"
+                elif "think" in clarification or "2" in clarification:
+                    mode_key = "think"
+                else:
+                    mode_key = "quick"
+            
+            if mode_key:
+                print(f"[Learned new mapping: {mode_key.upper()}]")
+                feedback_use_case.execute(transcript, mode_key)
+            else:
+                mode_key = "quick"
             print(f"[Router: {mode_key.upper()} | Model: {ACTIVE_MODEL}]")
 
             if mode_key == "code":
@@ -536,7 +506,7 @@ def main_loop():
             ]
 
             print("JARVIS: ", end="", flush=True)
-            
+
             # Standard Ollama Streaming
             t_req = time.perf_counter()
             stream = ollama.chat(
