@@ -144,6 +144,11 @@ class AgentManager:
         if self._is_reviewing and self.voice_grammar:
             print(f"[AgentManager] Routing voice to review grammar: '{text}'")
             success = self.voice_grammar.handle_voice_command(text)
+            
+            # Check if review completed after voice action
+            if self.review_coordinator and not self.review_coordinator.active_session:
+                self._finish_review()
+                
             if not success and self.on_speech:
                 self.on_speech("I didn't understand that, can you repeat?")
             return
