@@ -171,7 +171,9 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     import audioop
 
-def listen_for_command():
+import msvcrt
+
+def listen_for_command(allow_keyboard: bool = False):
     """
     Listens using Silero VAD running locally on ONNX Runtime.
     Tolerates cognitive pauses and outputs 16kHz WAV for Whisper.
@@ -202,8 +204,8 @@ def listen_for_command():
 
     # Silero recurrent LSTM hidden states
     state = np.zeros((2, 1, 128), dtype=np.float32)
-    sample_rate_tensor = np.array(TARGET_SR, dtype=np.int64)
-    context = np.zeros(CONTEXT_SIZE, dtype=np.float32)  # Rolling context buffer
+    context = np.zeros((CONTEXT_SIZE,), dtype=np.float32)
+    sample_rate_tensor = np.array([TARGET_SR], dtype=np.int64)
 
     audio_q = queue.Queue()
 
@@ -211,6 +213,8 @@ def listen_for_command():
         audio_q.put(indata.copy())
 
     print(f"\nListening on Device {device_id} at {native_sr}Hz (Silero VAD)...")
+    if allow_keyboard:
+        print("[Press 1 for Quick, 2 for Think, 3 for Code]")
     
     pre_speech_ring = collections.deque(maxlen=PRE_BUFFER_CHUNKS)
     voiced_chunks = []
@@ -251,6 +255,11 @@ def listen_for_command():
                         blocksize=NATIVE_CHUNK, callback=mic_callback):
         while True:
             chunk_int16 = audio_q.get()
+            
+            if allow_keyboard and msvcrt.kbhit():
+                char = msvcrt.getch().decode('utf-8', errors='ignore')
+                if char in ['1', '2', '3']:
+                    return "keyboard", char
             
             if tts_lock.locked():
                 # Prevent the assistant from hearing its own TTS output
@@ -448,30 +457,42 @@ def main_loop():
                 agent_manager.send_input(transcript)
                 continue
 
-            # 3. Intent Classification for ambient mode
-            route_result = determine_intent(transcript)
-            mode_key = route_result.intent.value
+            # 3. Manual Route Confirmation (Training Mode)
+            # determine_intent is called just to log the current vector DB state
+            determine_intent(transcript)
             
-            if route_result.requires_clarification:
-                speak("I'm not completely sure. Should I write code for this, or just think about it?")
-                print("\n[Waiting for clarification...]")
-                clarification_audio, clarification_live = listen_for_command()
-                
-                if clarification_live.strip():
-                    clarification = clarification_live.strip().lower()
+            speak("Route to quick, think, or code?")
+            print("\n[Waiting for route confirmation (Say route name or press 1, 2, or 3)...]")
+            
+            audio_or_kb, live_transcript = listen_for_command(allow_keyboard=True)
+            
+            mode_key = None
+            if audio_or_kb == "keyboard":
+                if live_transcript == '1':
+                    mode_key = "quick"
+                elif live_transcript == '2':
+                    mode_key = "think"
+                elif live_transcript == '3':
+                    mode_key = "code"
+            else:
+                if live_transcript.strip():
+                    clarification = live_transcript.strip().lower()
                 else:
-                    cl_segments, _ = stt_model.transcribe(clarification_audio, beam_size=5)
+                    cl_segments, _ = stt_model.transcribe(audio_or_kb, beam_size=5)
                     clarification = "".join([s.text for s in cl_segments]).strip().lower()
                 
-                if "code" in clarification:
+                if "code" in clarification or "3" in clarification:
                     mode_key = "code"
-                elif "think" in clarification:
+                elif "think" in clarification or "2" in clarification:
                     mode_key = "think"
                 else:
                     mode_key = "quick"
-                
+            
+            if mode_key:
                 print(f"[Learned new mapping: {mode_key.upper()}]")
                 feedback_use_case.execute(transcript, mode_key)
+            else:
+                mode_key = "quick"
             print(f"[Router: {mode_key.upper()} | Model: {ACTIVE_MODEL}]")
 
             if mode_key == "code":
