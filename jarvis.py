@@ -139,7 +139,7 @@ def run_antigravity_coding_task(prompt: str):
     """Launches Antigravity CLI via AgentManager."""
     print(f"\n[Antigravity CLI] Running coding task via AgentManager...")
     print(f"[Antigravity CLI] Prompt: '{prompt}'")
-    speak("I am on it. Directing the coding task to Antigravity.")
+    threading.Thread(target=speak, args=("I am on it. Directing the coding task to Antigravity.",), daemon=True).start()
     project_dir = os.path.dirname(os.path.abspath(__file__))
     if agent_manager:
         agent_manager.start_session("antigravity", prompt=prompt, cwd=project_dir)
@@ -300,6 +300,35 @@ def listen_for_command():
     is_speaking = False
     silence_start_time = None
     state_ratecv = None
+    
+    # Speed A: Streaming STT overlapping
+    live_transcript = ""
+    last_transcribe_len = 0
+    stt_lock = threading.Lock()
+    
+    def live_transcribe_worker():
+        nonlocal live_transcript, last_transcribe_len
+        while True:
+            time.sleep(1.0)
+            with stt_lock:
+                if not is_speaking and silence_start_time and (time.perf_counter() - silence_start_time) > PAUSE_TOLERANCE_SEC:
+                    break
+                current_len = len(voiced_chunks)
+            
+            if current_len > last_transcribe_len and current_len > 10:
+                # Take snapshot and transcribe
+                with stt_lock:
+                    snapshot = list(voiced_chunks)
+                audio_np = np.concatenate(snapshot, axis=0).astype(np.float32) / 32768.0
+                try:
+                    segments, _ = stt_model.transcribe(audio_np, beam_size=1)
+                    with stt_lock:
+                        live_transcript = "".join([s.text for s in segments]).strip()
+                        last_transcribe_len = current_len
+                except Exception:
+                    pass
+
+    transcribe_thread = threading.Thread(target=live_transcribe_worker, daemon=True)
 
     with sd.InputStream(device=device_id, samplerate=native_sr, channels=1, dtype='int16', 
                         blocksize=NATIVE_CHUNK, callback=mic_callback):
@@ -337,27 +366,32 @@ def listen_for_command():
             state = ort_outs[1]
 
             if speech_prob >= SPEECH_PROB_THRESHOLD:
-                if not is_speaking:
-                    is_speaking = True
-                    # Prepend buffered audio so first syllable is never lost
-                    voiced_chunks.extend(pre_speech_ring)
-                    pre_speech_ring.clear()
-                
-                voiced_chunks.append(chunk_16k)
-                silence_start_time = None  # Reset silence timer while talking
-            else:
-                if is_speaking:
+                with stt_lock:
+                    if not is_speaking:
+                        is_speaking = True
+                        if not transcribe_thread.is_alive():
+                            transcribe_thread.start()
+                        # Prepend buffered audio so first syllable is never lost
+                        voiced_chunks.extend(pre_speech_ring)
+                        pre_speech_ring.clear()
+                    
                     voiced_chunks.append(chunk_16k)
-                    if silence_start_time is None:
-                        silence_start_time = time.perf_counter()
-                    elif time.perf_counter() - silence_start_time >= PAUSE_TOLERANCE_SEC:
-                        # User took a full 1.6s pause after speaking: turn is complete
-                        break
-                else:
-                    pre_speech_ring.append(chunk_16k)
+                    silence_start_time = None  # Reset silence timer while talking
+            else:
+                with stt_lock:
+                    if is_speaking:
+                        voiced_chunks.append(chunk_16k)
+                        if silence_start_time is None:
+                            silence_start_time = time.perf_counter()
+                        elif time.perf_counter() - silence_start_time >= PAUSE_TOLERANCE_SEC:
+                            # User took a full 1.6s pause after speaking: turn is complete
+                            break
+                    else:
+                        pre_speech_ring.append(chunk_16k)
 
     # Convert collected 16-bit PCM chunks and export to temp.wav
-    all_audio = np.concatenate(voiced_chunks, axis=0)
+    with stt_lock:
+        all_audio = np.concatenate(voiced_chunks, axis=0)
 
     with wave.open("temp.wav", "wb") as wf:
         wf.setnchannels(1)
@@ -365,7 +399,7 @@ def listen_for_command():
         wf.setframerate(TARGET_SR)
         wf.writeframes(all_audio.tobytes())
 
-    return "temp.wav"
+    return "temp.wav", live_transcript
 
 def speak(text):
     """In-memory TTS playback: synthesizes to RAM and writes directly to sound card."""
@@ -400,28 +434,87 @@ def main_loop():
     print(f"[Agent Adapter] Active Parser: {parser_type}")
     speak(f"JARVIS online. Active model is {ACTIVE_MODEL}.")
     
-    # Start Code Review UI server in background
-    def start_ui():
-        print("[JARVIS] Starting Code Review UI server on http://127.0.0.1:8000")
-        uvicorn.run("ui_server:app", host="127.0.0.1", port=8000, log_level="error")
+    # Start Code Review Gateway server in background (REST + WebSocket for mobile)
+    def start_gateway():
+        from fastapi import FastAPI
+        from verifier.adapters.gateway.api_router import create_review_router, create_mobile_app_router
+
+        gateway_app = FastAPI(title="JARVIS Code Review Gateway")
+
+        # The coordinator is created per-session inside AgentManager,
+        # but we need a reference for the API router. We use a lazy proxy.
+        class CoordinatorProxy:
+            @property
+            def active_session(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    return agent_manager.review_coordinator.active_session
+                return None
+            def accept_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.accept_hunk(hunk_id)
+            def reject_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.reject_hunk(hunk_id)
+            def accept_all(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.accept_all()
+            def reject_all(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.reject_all()
+            def skip_hunk(self):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.skip_hunk()
+            def explain_hunk(self, hunk_id):
+                if agent_manager and agent_manager.review_coordinator:
+                    agent_manager.review_coordinator.explain_hunk(hunk_id)
+
+        proxy = CoordinatorProxy()
+        review_router = create_review_router(proxy, agent_manager.mobile_presenter)
+        mobile_router = create_mobile_app_router()
+        gateway_app.include_router(review_router)
+        gateway_app.include_router(mobile_router)
+
+        print("[JARVIS] Starting Code Review Gateway on http://127.0.0.1:8000")
+        uvicorn.run(gateway_app, host="127.0.0.1", port=8000, log_level="error")
     
-    threading.Thread(target=start_ui, daemon=True).start()
+    threading.Thread(target=start_gateway, daemon=True).start()
     
     while True:
         try:
-            audio_file = listen_for_command()
+            audio_file, live_transcript = listen_for_command()
             t0 = time.perf_counter()
             
-            # STT
-            segments, _ = stt_model.transcribe(audio_file, beam_size=5)
-            transcript = "".join([segment.text for segment in segments]).strip()
+            # Optimistic Acknowledgment (UX A)
+            def play_chime():
+                try:
+                    fs = 44100
+                    duration = 0.15
+                    t = np.linspace(0, duration, int(fs * duration), False)
+                    note = np.sin(880.0 * t * 2 * np.pi) * np.exp(-5 * t) * 0.1
+                    sd.play((note * 32767).astype(np.int16), samplerate=fs, blocking=False)
+                except:
+                    pass
+            threading.Thread(target=play_chime, daemon=True).start()
+            
+            # STT - Use live transcript if available to save time
+            if live_transcript.strip():
+                transcript = live_transcript.strip()
+            else:
+                segments, _ = stt_model.transcribe(audio_file, beam_size=5)
+                transcript = "".join([segment.text for segment in segments]).strip()
             
             if not transcript:
                 continue
                 
             print(f"\nYou: {transcript}")
 
-            # 1. Route voice input directly to active agent session if running
+            # 1. Route voice to diff review if a review session is active
+            if agent_manager and agent_manager.is_reviewing:
+                print(f"[Diff Review] Routing voice to review grammar: '{transcript}'")
+                agent_manager.send_input(transcript)
+                continue
+
+            # 2. Route voice input directly to active agent session if running
             if agent_manager and agent_manager.has_active_session():
                 active_cli = agent_manager.active_session.cli_name
                 print(f"[Active Agent Session: {active_cli}] Piping voice input to stdin: '{transcript}'")
