@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="JARVIS Review">
+    <title>JARVIS Code Review</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Idle State -->
+    <div id="idle-screen" class="screen active">
+        <div class="idle-content">
+            <div class="pulse-ring"></div>
+            <div class="jarvis-icon">🧠</div>
+            <h1>JARVIS</h1>
+            <p class="subtitle">Waiting for code review session...</p>
+            <p class="connection-status" id="conn-status">Connecting...</p>
+        </div>
+    </div>
+
+    <!-- Review State -->
+    <div id="review-screen" class="screen">
+        <!-- Progress Header -->
+        <header class="review-header">
+            <div class="progress-info">
+                <span id="hunk-counter">Block 1 of 1</span>
+                <span id="file-badge" class="file-badge">file.py</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+            </div>
+            <div class="stats-row">
+                <span class="stat accepted" id="stat-accepted">✓ 0</span>
+                <span class="stat rejected" id="stat-rejected">✗ 0</span>
+                <span class="stat pending" id="stat-pending">⏳ 0</span>
+            </div>
+        </header>
+
+        <!-- Swipeable Card Container -->
+        <div class="card-container" id="card-container">
+            <div class="diff-card" id="diff-card">
+                <div class="diff-content" id="diff-content">
+                    <pre><code id="diff-code">Loading diff...</code></pre>
+                </div>
+                <div class="swipe-hint left">✗ Reject</div>
+                <div class="swipe-hint right">✓ Accept</div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-bar">
+            <button class="action-btn reject-btn" id="btn-reject" onclick="rejectHunk()">
+                <span class="btn-icon">✗</span>
+                <span class="btn-label">Reject</span>
+            </button>
+            <button class="action-btn explain-btn" id="btn-explain" onclick="explainHunk()">
+                <span class="btn-icon">💡</span>
+                <span class="btn-label">Explain</span>
+            </button>
+            <button class="action-btn accept-btn" id="btn-accept" onclick="acceptHunk()">
+                <span class="btn-icon">✓</span>
+                <span class="btn-label">Accept</span>
+            </button>
+        </div>
+
+        <!-- Batch Actions -->
+        <div class="batch-bar">
+            <button class="batch-btn accept-all" onclick="acceptAll()">Accept All</button>
+            <button class="batch-btn reject-all" onclick="rejectAll()">Reject All</button>
+        </div>
+    </div>
+
+    <!-- Completed State -->
+    <div id="complete-screen" class="screen">
+        <div class="complete-content">
+            <div class="check-icon">✓</div>
+            <h1>Review Complete</h1>
+            <p id="complete-summary">0 accepted, 0 rejected</p>
+            <p class="subtitle">Returning to standby...</p>
+        </div>
+    </div>
+
+    <!-- Explanation Modal -->
+    <div class="modal-overlay" id="explanation-modal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <span>💡 Explanation</span>
+                <button class="modal-close" onclick="closeExplanation()">✕</button>
+            </div>
+            <div class="modal-body" id="explanation-text">Loading...</div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

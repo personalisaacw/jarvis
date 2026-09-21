@@ -1,6 +1,12 @@
 venv/
 .venv/
 env/
-
-# Ignore large downloaded model files if you don't want them on GitHub
-*.onnx
+__pycache__/
+*.pyc
+*.wav
+.agent/
+.opencode/
+.jarvis/
+diffs.json
+.env
+.vectorstore/
