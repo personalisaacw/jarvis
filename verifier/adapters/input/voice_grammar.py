@@ -149,7 +149,7 @@ class ReviewVoiceGrammar(IVoiceInputPort):
 
         return None
 
-    def handle_voice_command(self, transcript: str) -> None:
+    def handle_voice_command(self, transcript: str) -> bool:
         """Parse spoken transcript and route it to the corresponding review command.
 
         Normalizes the transcript, classifies the intended command, and executes
@@ -158,15 +158,18 @@ class ReviewVoiceGrammar(IVoiceInputPort):
 
         Args:
             transcript: Spoken voice input transcript.
+            
+        Returns:
+            True if the command was recognized and handled, False otherwise.
         """
         action = self.classify(transcript)
         if not action:
             print(f"[VoiceGrammar] Unrecognized voice command: '{transcript}'")
-            return
+            return False
 
         if not self.coordinator:
             print(f"[VoiceGrammar] Cannot execute '{action}': No coordinator configured.")
-            return
+            return False
 
         try:
             if action == "accept_all":
@@ -213,5 +216,7 @@ class ReviewVoiceGrammar(IVoiceInputPort):
                     self.coordinator.reject_hunk(session.current_hunk.hunk_id)
                 else:
                     print("[VoiceGrammar] Cannot reject hunk: No active hunk or session available.")
+            return True
         except Exception as e:
             print(f"[VoiceGrammar] Error executing voice command '{action}': {e}")
+            return False

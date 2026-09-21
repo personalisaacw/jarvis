@@ -143,7 +143,9 @@ class AgentManager:
         # ── If in diff review mode, route voice to the review grammar ──
         if self._is_reviewing and self.voice_grammar:
             print(f"[AgentManager] Routing voice to review grammar: '{text}'")
-            self.voice_grammar.handle_voice_command(text)
+            success = self.voice_grammar.handle_voice_command(text)
+            if not success and self.on_speech:
+                self.on_speech("I didn't understand that, can you repeat?")
             return
 
         if not self.active_session:
