@@ -240,6 +240,15 @@ class GitDiffEngineAdapter(IDiffEnginePort):
 
     def revert_hunk(self, workspace_root: str, hunk: DiffHunk) -> bool:
         """Reverse a hunk from the working directory."""
+        
+        # FIX: If this is an entirely new untracked file, reverting the hunk just means deleting the file.
+        if hunk.old_start == 0 and hunk.old_lines == 0:
+            full_path = os.path.join(workspace_root, hunk.file_path)
+            if os.path.exists(full_path):
+                os.remove(full_path)
+                print(f"[GitDiffEngine] Reverted new file creation by deleting {hunk.file_path}")
+            return True
+
         patch_content = f"--- a/{hunk.file_path}\n+++ b/{hunk.file_path}\n{hunk.diff_text}\n"
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False, encoding='utf-8') as f:
