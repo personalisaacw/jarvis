@@ -1,24 +1,20 @@
 import pytest
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from jarvis import determine_intent
+from domain.entities import Intent
+from memory.adapters.sqlite_store import SqliteMemoryStore
+from tests.memory.conftest import FakeEmbedder
+from use_cases.routing import LearnFromFeedbackUseCase, RouteCommandUseCase
 
-def test_determine_intent_think_mode():
-    """Verify that deep thinking queries route to think mode."""
-    is_thinking, mode = determine_intent("design a scalable architecture for microservices")
-    assert is_thinking is True
-    assert mode == "think"
+CASES = [
+    ("design a scalable architecture for microservices", Intent.THINK),
+    ("write a python script to list files", Intent.CODE),
+    ("what time is it in Tokyo", Intent.QUICK),
+]
 
-def test_determine_intent_code_mode():
-    """Verify that coding queries route to code mode."""
-    is_thinking, mode = determine_intent("write a python script to list files")
-    assert is_thinking is False
-    assert mode == "code"
 
-def test_determine_intent_quick_default():
-    """Verify that general queries default to quick mode."""
-    is_thinking, mode = determine_intent("what time is it in Tokyo")
-    assert is_thinking is False
-    assert mode == "quick"
+@pytest.mark.parametrize("text,intent", CASES)
+def test_routes_seeded_sentence(text, intent):
+    store, embedder = SqliteMemoryStore(":memory:"), FakeEmbedder()
+    for t, i in CASES:
+        LearnFromFeedbackUseCase(store, embedder).execute(t, i.value)
+    assert RouteCommandUseCase(store, embedder).execute(text).intent == intent

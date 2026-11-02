@@ -2,11 +2,15 @@ import json
 import os
 import sqlite3
 import threading
+import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
+from domain.entities import Intent, Utterance
+from domain.ports import IVectorStore
 from memory.domain.entities import (
+    GLOBAL_SCOPE,
     Access,
     AccessKind,
     EventLabel,
@@ -18,6 +22,7 @@ from memory.domain.entities import (
     Turn,
 )
 from memory.domain.params import PARAM_SPECS, Params
+from memory.domain.scoring import cosine, strength
 from memory.ports.clock import IClock, SystemClock
 from memory.ports.store import IMemoryStore
 
@@ -66,6 +71,7 @@ _TURN_COLS = (
     "id, session_id, at, project_scope, mode, user_text, assistant_text, embedding, "
     "salience, recalled_ids, extracted_at"
 )
+_ROUTE_POOL = 50  # candidates re-ranked by cosine x strength in search_similar
 _EMPTY = np.zeros((0, 384), dtype=np.float32)
 
 
@@ -107,7 +113,7 @@ def _in_clause(values: Iterable[Any]) -> Tuple[str, list]:
     return "(" + ",".join("?" * len(vals)) + ")", vals
 
 
-class SqliteMemoryStore(IMemoryStore):
+class SqliteMemoryStore(IMemoryStore, IVectorStore):
     def __init__(self, path: str = ".jarvis/memory.sqlite", clock: IClock = SystemClock()):
         self._clock = clock
         self._lock = threading.RLock()
@@ -224,6 +230,71 @@ class SqliteMemoryStore(IMemoryStore):
             if not ids:
                 return 0.0
             return float(np.max(self._scores(matrix, vec)))
+
+    # ---- dedup ----
+
+    def dedup(self, kinds: List[MemoryKind], threshold: float, now: float) -> int:
+        """Merge near-duplicate current memories within (kind, scope, label); return merges."""
+        with self._lock:
+            p = self.load_params()
+            groups: Dict[Tuple[Any, ...], List[Memory]] = {}
+            for m in self.list(Status.CURRENT, kinds):
+                groups.setdefault((m.kind, m.scope, m.label), []).append(m)
+            merges = 0
+            for members in groups.values():
+                members.sort(key=lambda m: -strength(m, now, p))  # stable: ties keep age order
+                keepers: List[Memory] = []
+                for m in members:
+                    keeper = next(
+                        (k for k in keepers if cosine(k.embedding, m.embedding) >= threshold), None
+                    )
+                    if keeper is None:
+                        keepers.append(m)
+                        continue
+                    self.move_accesses(m.id, keeper.id)
+                    m.status, m.superseded_by_id = Status.SUPERSEDED, keeper.id
+                    keeper.supersedes_id = m.id
+                    self.update(m)
+                    self.update(keeper)
+                    merges += 1
+            return merges
+
+    # ---- IVectorStore (semantic router examples) ----
+
+    def add_utterance(self, utterance: Utterance, vector: List[float]) -> None:
+        with self._lock:
+            vec = np.asarray(vector, dtype=np.float32)
+            label = Intent(utterance.intent).value
+            threshold = self.load_params().get("dedup_threshold")
+            for m, sim in self.nearest(vec, _ROUTE_POOL, [MemoryKind.ROUTE_EXAMPLE], GLOBAL_SCOPE):
+                if m.label == label and sim >= threshold:
+                    self.add_access(m.id, self._clock.now(), AccessKind.REINFORCED)
+                    return
+            self.add(Memory(
+                id=uuid.uuid4().hex, kind=MemoryKind.ROUTE_EXAMPLE, scope=GLOBAL_SCOPE,
+                content=utterance.text, embedding=vec, importance=0.5, status=Status.CURRENT,
+                tier=Tier.ACTIVE, created_at=utterance.timestamp, label=label,
+            ))
+
+    def search_similar(
+        self, vector: List[float], limit: int = 3
+    ) -> List[Tuple[Utterance, float]]:
+        with self._lock:
+            p, now = self.load_params(), self._clock.now()
+            hits = self.nearest(
+                np.asarray(vector, dtype=np.float32), max(limit, _ROUTE_POOL),
+                [MemoryKind.ROUTE_EXAMPLE], GLOBAL_SCOPE,
+            )
+        hits.sort(key=lambda h: -(h[1] * strength(h[0], now, p)))
+        return [
+            (Utterance(m.content, Intent(m.label), m.created_at), 2.0 - 2.0 * sim)
+            for m, sim in hits[:limit]
+        ]
+
+    def distill_utterances(self) -> None:
+        self.dedup(
+            [MemoryKind.ROUTE_EXAMPLE], self.load_params().get("dedup_threshold"), self._clock.now()
+        )
 
     # ---- accesses ----
 

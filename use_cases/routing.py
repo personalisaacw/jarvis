@@ -1,5 +1,5 @@
 import time
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from domain.entities import Intent, Utterance, RoutingResult
 from domain.ports import IVectorStore, IEmbeddingEngine
 
@@ -9,9 +9,10 @@ class RouteCommandUseCase:
         self.embedding_engine = embedding_engine
         self.fallback_threshold = fallback_threshold
 
-    def execute(self, text: str) -> RoutingResult:
-        # 1. Embed text
-        vector = self.embedding_engine.embed_text(text)
+    def execute(self, text: str, vector: Optional[List[float]] = None) -> RoutingResult:
+        # 1. Embed text (unless the caller already did)
+        if vector is None:
+            vector = self.embedding_engine.embed_text(text)
         
         # 2. Query nearest matches
         results = self.vector_store.search_similar(vector, limit=3)

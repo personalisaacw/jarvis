@@ -58,6 +58,9 @@ class IMemoryStore(ABC):
     @abstractmethod
     def move_accesses(self, from_id: str, to_id: str) -> None: ...
 
+    @abstractmethod
+    def dedup(self, kinds: List[MemoryKind], threshold: float, now: float) -> int: ...
+
     # events
     @abstractmethod
     def add_event(self, e: MemoryEvent) -> None: ...
