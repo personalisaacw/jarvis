@@ -170,6 +170,8 @@ def test_profile_excluded_from_recall_and_cached_until_invalidated(recall, store
     store.add(_m("feat", id="f1", kind=MemoryKind.FEATURE))
     store.add(_m("done", id="f2", kind=MemoryKind.FEATURE, completed_at=5.0))
     store.add(_m("pref", id="fact"))
+    store.add(_m("old", id="p_arch", kind=MemoryKind.PREFERENCE, scope=GLOBAL_SCOPE,
+                 tier=Tier.ARCHIVED))
     prof = recall.profile(SCOPE)
     assert [m.id for m in prof.preferences] == ["p1"]
     assert [m.id for m in prof.features] == ["f1"]
@@ -198,6 +200,15 @@ def test_code_mode_includes_all_project_features_and_decisions(recall, store):
     store.add(_m("q", id="fact"))
     r = recall.execute(vec("q"), SCOPE, "code")
     assert _ids(r)[:2] == ["dec", "fact"]  # project decision is forced to the front
+
+
+def test_code_mode_forces_active_project_features_and_decisions_only(recall, store):
+    store.add(_m("a", id="act", kind=MemoryKind.DECISION))
+    store.add(_m("b", id="arch", kind=MemoryKind.DECISION, tier=Tier.ARCHIVED))
+    store.add(_m("c", id="dorm", kind=MemoryKind.FEATURE, tier=Tier.DORMANT))
+    r = recall.execute(vec("unrelated"), SCOPE, "code")
+    assert _ids(r) == ["act"]
+    assert _recalled(store, "arch") == [] and _recalled(store, "dorm") == []
 
 
 def test_code_mode_features_returned_even_when_nothing_similar(recall, store):

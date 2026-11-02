@@ -103,13 +103,17 @@ class RecallUseCase:
             return sorted(ms, key=lambda m: strength(m, now, p), reverse=True)
 
         prefs = by_strength(
-            self._store.list(Status.CURRENT, [MemoryKind.PREFERENCE], GLOBAL_SCOPE)
+            [
+                m
+                for m in self._store.list(Status.CURRENT, [MemoryKind.PREFERENCE], GLOBAL_SCOPE)
+                if m.tier != Tier.ARCHIVED
+            ]
         )[: int(p.get("profile_preferences"))]
         feats = by_strength(
             [
                 m
                 for m in self._store.list(Status.CURRENT, [MemoryKind.FEATURE], project_scope)
-                if m.completed_at is None
+                if m.completed_at is None and m.tier != Tier.ARCHIVED
             ]
         )
         prof = Profile(prefs, feats, self._version)
@@ -195,6 +199,7 @@ class RecallUseCase:
                     for s in scored
                     if s[0].scope == project_scope
                     and s[0].kind in (MemoryKind.FEATURE, MemoryKind.DECISION)
+                    and s[0].tier == Tier.ACTIVE
                     and s[0].id not in in_profile
                 ),
                 key=lambda m: strength(m, now, p),
