@@ -102,7 +102,48 @@ def test_new_dedup_onto_dormant_logs_miss(store, embedder, clock):
     assert len(miss) == 1 and miss[0].memory_id == "m1"
     assert miss[0].context["tier_at_time"] == "dormant"
     assert miss[0].context["rank_at_time"] == 0
+    assert miss[0].context["mode"] == "think"
     assert miss[0].context["similarity"] > 0.99
+
+
+def test_apply_new_explicit_inserts_with_importance_one_and_explicit_access(
+    store, embedder, clock
+):
+    uc, _ = make_capture(store, embedder, clock)
+    m = uc.apply_new(NewMemory(MemoryKind.FACT, "project", "my cat is Tom", 0.2), SCOPE, True, "t1")
+    stored = store.get(m.id)
+    assert stored.importance == 1.0
+    assert AccessKind.EXPLICIT in [a.kind for a in stored.accesses]
+
+
+def test_apply_new_explicit_dedup_pins_importance(store, embedder, clock):
+    put(store, clock, "m1", "my cat is Tom", importance=0.2)
+    uc, _ = make_capture(store, embedder, clock)
+    m = uc.apply_new(NewMemory(MemoryKind.FACT, "project", "my cat is Tom", 0.2), SCOPE, True, "t1")
+    stored = store.get("m1")
+    assert m.id == "m1" and stored.importance == 1.0
+    assert AccessKind.EXPLICIT in [a.kind for a in stored.accesses]
+    assert len(store.list(Status.CURRENT)) == 1
+
+
+def test_public_apply_new_fires_profile_callback(store, embedder, clock):
+    calls = []
+    uc, _ = make_capture(store, embedder, clock, on_profile_change=lambda: calls.append(1))
+    uc.apply_new(NewMemory(MemoryKind.FACT, "project", "plain", 0.5), SCOPE, False, None)
+    assert calls == []
+    uc.apply_new(NewMemory(MemoryKind.PREFERENCE, "global", "likes tabs", 0.5), SCOPE, True, None)
+    assert calls == [1]
+
+
+def test_supersede_skips_non_current_old(store, embedder, clock):
+    old = put(store, clock, "old", "use mysql")
+    old.status = Status.FORGOTTEN
+    store.update(old)
+    run(store, embedder, clock,
+        Extraction(supersede=[Supersede("old", "x", MemoryKind.FACT, 0.5)]),
+        [turn(clock)])
+    assert store.list(Status.CURRENT) == []
+    assert store.get("old").status == Status.FORGOTTEN
 
 
 def test_reinforce_logs_hit_and_irrelevant_logs_false_recall(store, embedder, clock):

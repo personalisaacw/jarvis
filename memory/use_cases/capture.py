@@ -1,5 +1,5 @@
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -53,7 +53,6 @@ class CaptureBatchUseCase:
         self._on_profile_change = on_profile_change
         self._classifier_score_for = classifier_score_for or (lambda turn_id: None)
         self._new_id = id_factory
-        self._touched_profile = False
 
     # ---- entry point ----
 
@@ -81,19 +80,20 @@ class CaptureBatchUseCase:
                 self._store.set_meta(retry_key, "1")
             return None
 
-        self._touched_profile = False
+        touched = False
         for nm in extraction.new:
-            self.apply_new(nm, project_scope, False, turns[-1].id)
+            _, t = self._apply_new(nm, project_scope, False, turns[-1].id, turns[-1].mode)
+            touched = touched or t
         for mid in extraction.reinforce:
             self._apply_reinforce(mid, turns, project_scope)
         for mid in extraction.irrelevant:
             self._log_recalled(EventLabel.FALSE_RECALL, mid, turns, project_scope)
         for s in extraction.supersede:
-            self._apply_supersede(s, turns, project_scope)
+            touched = self._apply_supersede(s, turns, project_scope) or touched
         for mid in extraction.complete:
-            self._apply_complete(mid)
+            touched = self._apply_complete(mid) or touched
         for mid in extraction.forget:
-            self._apply_forget(mid, turns, project_scope)
+            touched = self._apply_forget(mid, turns, project_scope) or touched
         for op in extraction.explicit_ops:
             self._apply_missed_op(op, turns)
         if extraction.is_empty():
@@ -103,15 +103,25 @@ class CaptureBatchUseCase:
         self._store.mark_extracted(turn_ids, self._clock.now())
         if self._store.get_meta(retry_key):
             self._store.set_meta(retry_key, "")
-        if self._touched_profile and self._on_profile_change is not None:
+        if touched and self._on_profile_change is not None:
             self._on_profile_change()
         return extraction
 
     # ---- new memories ----
 
     def apply_new(
-        self, nm: NewMemory, project_scope: str, explicit: bool, turn_id: Optional[str]
+        self, nm: NewMemory, project_scope: str, explicit: bool, turn_id: Optional[str],
+        mode: Optional[str] = None,
     ) -> Memory:
+        memory, touched = self._apply_new(nm, project_scope, explicit, turn_id, mode)
+        if touched and self._on_profile_change is not None:
+            self._on_profile_change()
+        return memory
+
+    def _apply_new(
+        self, nm: NewMemory, project_scope: str, explicit: bool, turn_id: Optional[str],
+        mode: Optional[str],
+    ) -> Tuple[Memory, bool]:
         now = self._clock.now()
         scope = project_scope if nm.scope == "project" else GLOBAL_SCOPE
         vector = self._embed(nm.content)
@@ -121,23 +131,25 @@ class CaptureBatchUseCase:
             self._store.add_access(
                 existing.id, now, AccessKind.EXPLICIT if explicit else AccessKind.REINFORCED
             )
+            if explicit and existing.importance < 1.0:
+                existing.importance = 1.0
+                self._store.update(existing)
             if existing.tier != Tier.ACTIVE:
-                self._log(EventLabel.MISS, existing.id, turn_id, {
+                context = {
                     "tier_at_time": existing.tier.value, "similarity": sim, "rank_at_time": 0,
                     "scope": existing.scope, "query_scope": project_scope,
-                })
-            return existing
+                }
+                if mode is not None:
+                    context["mode"] = mode
+                self._log(EventLabel.MISS, existing.id, turn_id, context)
+            return existing, False
         importance = 1.0 if explicit else min(1.0, max(0.0, float(nm.importance)))
-        memory = self._insert(nm.kind, scope, nm.content, vector, importance, None)
-        if explicit:
-            self._store.add_access(memory.id, now, AccessKind.EXPLICIT)
-        if memory.kind in _PROFILE_KINDS:
-            self._touched_profile = True
-        return memory
+        memory = self._insert(nm.kind, scope, nm.content, vector, importance, None, explicit)
+        return memory, memory.kind in _PROFILE_KINDS
 
     def _insert(
         self, kind: MemoryKind, scope: str, content: str, vector: np.ndarray,
-        importance: float, label: Optional[str],
+        importance: float, label: Optional[str], explicit: bool = False,
     ) -> Memory:
         m = Memory(
             id=self._new_id(), kind=kind, scope=scope, content=content, embedding=vector,
@@ -145,6 +157,8 @@ class CaptureBatchUseCase:
             created_at=self._clock.now(), label=label,
         )
         self._store.add(m)
+        if explicit:
+            self._store.add_access(m.id, self._clock.now(), AccessKind.EXPLICIT)
         stored = self._store.get(m.id)
         p = self._params()
         tier = tier_for(strength(stored, self._clock.now(), p), p)
@@ -162,11 +176,11 @@ class CaptureBatchUseCase:
         self._store.add_access(m.id, self._clock.now(), AccessKind.REINFORCED)
         self._log_recalled(EventLabel.HIT, memory_id, turns, project_scope)
 
-    def _apply_supersede(self, s: Supersede, turns: List[Turn], project_scope: str) -> None:
+    def _apply_supersede(self, s: Supersede, turns: List[Turn], project_scope: str) -> bool:
         old = self._store.get(s.old_id)
-        if old is None:
-            print("[Memory/Capture] supersede skipped, unknown id %s" % s.old_id)
-            return
+        if old is None or old.status != Status.CURRENT:
+            print("[Memory/Capture] supersede skipped, unknown or non-current id %s" % s.old_id)
+            return False
         new = self._insert(s.kind, old.scope, s.content, self._embed(s.content),
                            min(1.0, max(0.0, float(s.importance))), None)
         new.supersedes_id = old.id
@@ -175,26 +189,24 @@ class CaptureBatchUseCase:
         old.superseded_by_id = new.id
         self._store.update(old)
         self._log_recalled(EventLabel.STALE, old.id, turns, project_scope, old, True)
-        if old.kind in _PROFILE_KINDS or new.kind in _PROFILE_KINDS:
-            self._touched_profile = True
+        return old.kind in _PROFILE_KINDS or new.kind in _PROFILE_KINDS
 
-    def _apply_complete(self, memory_id: str) -> None:
+    def _apply_complete(self, memory_id: str) -> bool:
         m = self._store.get(memory_id)
         if m is None or m.kind != MemoryKind.FEATURE:
-            return
+            return False
         m.completed_at = self._clock.now()
         self._store.update(m)
-        self._touched_profile = True
+        return True
 
-    def _apply_forget(self, memory_id: str, turns: List[Turn], project_scope: str) -> None:
+    def _apply_forget(self, memory_id: str, turns: List[Turn], project_scope: str) -> bool:
         m = self._store.get(memory_id)
         if m is None:
-            return
+            return False
         m.status = Status.FORGOTTEN
         self._store.update(m)
         self._log_recalled(EventLabel.FALSE_RECALL, memory_id, turns, project_scope, m, True)
-        if m.kind in _PROFILE_KINDS:
-            self._touched_profile = True
+        return m.kind in _PROFILE_KINDS
 
     def _apply_missed_op(self, op: ExplicitOp, turns: List[Turn]) -> None:
         context: Dict[str, Any] = {}
@@ -238,7 +250,7 @@ class CaptureBatchUseCase:
 
     def _event_context_for(
         self, memory: Memory, turns: List[Turn], project_scope: str
-    ):
+    ) -> Tuple[Optional[str], Dict[str, Any]]:
         turn = next((t for t in turns if memory.id in t.recalled_ids), None)
         if turn is None:
             return None, {"tier_at_time": memory.tier.value, "scope": memory.scope,
