@@ -25,6 +25,8 @@ _RECALLABLE_KINDS = [k for k in MemoryKind if k not in _EXAMPLE_KINDS]
 _OP_ORDER = {op: i for i, op in enumerate(MemoryOp)}
 _NO_ASK = (MemoryOp.ASK, MemoryOp.STATUS)
 _YES_WORDS = {"yes", "yeah", "yep", "sure", "do it", "please", "correct"}
+_NEGATIONS = {"no", "don't", "dont", "not", "nope", "never", "wait", "stop", "cancel"}
+_POLITE_TAIL = ("please", "thanks")
 _QUESTIONS = {
     MemoryOp.STORE: "Should I remember that?",
     MemoryOp.FORGET: "Should I forget that?",
@@ -50,6 +52,19 @@ class PendingAsk:
     vec: np.ndarray
     candidates: List[Memory] = field(default_factory=list)
     score: float = 0.0
+
+
+@dataclass
+class _Executed:
+    """What an executed op did, so the next turn can undo exactly that."""
+    op: MemoryOp
+    utterance: str
+    vec: np.ndarray
+    score: float
+    changed: List[str] = field(default_factory=list)   # pre-existing memories it modified
+    created: List[str] = field(default_factory=list)   # memories it inserted
+    linked: List[str] = field(default_factory=list)    # pre-existing memories it linked to
+    events: List[str] = field(default_factory=list)    # events it logged
 
 
 @dataclass
@@ -131,8 +146,7 @@ class HandleMemoryOpUseCase:
         self._status_line = status_line_provider
         self._classifier = ClassifyMemoryOpUseCase(store, params_provider, clock)
         self._pending: Optional[PendingAsk] = None
-        # (op, affected ids, utterance, vec, classifier score) of the op run on the last turn
-        self._last_executed: Optional[Tuple[MemoryOp, List[str], str, np.ndarray, float]] = None
+        self._last_executed: Optional[_Executed] = None
 
     # ---- entry points ----
 
@@ -151,9 +165,9 @@ class HandleMemoryOpUseCase:
             return OpOutcome(spoken, True, None)
         if last is not None:
             if self._classifier.execute(vec, only=[MemoryOp.UNDO]).action == "execute":
-                op, ids, old_utterance, old_vec, score = last
-                spoken = self._revert(op, ids)
-                self.learn(old_utterance, old_vec, op, False, EventLabel.FALSE_OP, score)
+                spoken = self._revert(last)
+                self.learn(last.utterance, last.vec, last.op, False, EventLabel.FALSE_OP,
+                           last.score)
                 return OpOutcome(spoken, True, None)
         d = self._classifier.execute(vec)
         if d.op == MemoryOp.UNDO or d.action == "fallthrough":
@@ -192,77 +206,77 @@ class HandleMemoryOpUseCase:
             return self._run_ask(vec)
         if op == MemoryOp.STATUS:
             return self._status_line()
+        rec = _Executed(op, utterance, vec, score)
+        if op != MemoryOp.STORE and candidates is None:
+            candidates = self._candidates(op, vec)
+        try:
+            res = self._extractor.resolve_op(op, utterance, working_turns, candidates or [])
+        except Exception as e:
+            print("[Memory/Ops] resolve_op failed: %s" % e)
+            return _UNRESOLVED
         if op == MemoryOp.STORE:
-            spoken, ids = self._run_store(utterance, vec, working_turns)
+            spoken, done = self._run_store(res, rec)
         else:
-            if candidates is None:
-                candidates = self._candidates(op, vec)
-            try:
-                res = self._extractor.resolve_op(op, utterance, working_turns, candidates)
-            except Exception as e:
-                print("[Memory/Ops] resolve_op failed: %s" % e)
-                return _UNRESOLVED
             targets = [m for m in (self._store.get(i) for i in res.target_ids)
                        if m is not None and m.status == Status.CURRENT]
             run = {MemoryOp.FORGET: self._run_forget, MemoryOp.REVISE: self._run_revise,
                    MemoryOp.COMPLETE: self._run_complete}[op]
-            spoken, ids = run(targets, res, vec) if targets else (_UNRESOLVED, [])
-        if ids:
-            self._last_executed = (op, ids, utterance, vec, score)
+            spoken, done = run(targets, res, rec) if targets else (_UNRESOLVED, False)
+        if done:
+            self._last_executed = rec
             self._recall.invalidate_profile()
         return spoken
 
-    def _run_store(self, utterance: str, vec: np.ndarray,
-                   working_turns: List[Turn]) -> Tuple[str, List[str]]:
-        try:
-            res = self._extractor.resolve_op(MemoryOp.STORE, utterance, working_turns, [])
-        except Exception as e:
-            print("[Memory/Ops] resolve_op failed: %s" % e)
-            return _UNRESOLVED, []
+    def _run_store(self, res, rec: _Executed) -> Tuple[str, bool]:
         if res.new is None:
-            return _UNRESOLVED, []
-        now = self._clock.now()
-        m = self._capture.apply_new(res.new, self._scope(), explicit=True, turn_id=None,
-                                    mode=_ASK_MODE)
-        if m.created_at < now and m.tier != Tier.ACTIVE:  # capture logged a dedup miss
-            self._log_late_extraction(vec)
-        return "Noted.", [m.id]
+            return _UNRESOLVED, False
+        m, created = self._apply_new(res.new, rec)
+        if not created and m.tier != Tier.ACTIVE:  # capture logged a dedup miss
+            rec.events += self._log_late_extraction(rec.vec)
+        return "Noted.", True
 
-    def _run_forget(self, targets: List[Memory], res, vec: np.ndarray) -> Tuple[str, List[str]]:
+    def _run_forget(self, targets: List[Memory], res, rec: _Executed) -> Tuple[str, bool]:
         recalled = self._recall.last_recalled_ids()
         for m in targets:
             m.status = Status.FORGOTTEN
             self._store.update(m)
+            rec.changed.append(m.id)
             if m.id in recalled:
-                self._log(EventLabel.FALSE_RECALL, m.id, self._context(m, vec, recalled))
-        return "Forgotten: " + "; ".join(m.content for m in targets), [m.id for m in targets]
+                rec.events.append(self._log(EventLabel.FALSE_RECALL, m.id,
+                                            self._context(m, rec.vec, recalled)))
+        return "Forgotten: " + "; ".join(m.content for m in targets), True
 
-    def _run_revise(self, targets: List[Memory], res, vec: np.ndarray) -> Tuple[str, List[str]]:
+    def _run_revise(self, targets: List[Memory], res, rec: _Executed) -> Tuple[str, bool]:
         if res.new is None:
-            return _UNRESOLVED, []
+            return _UNRESOLVED, False
         old = targets[0]
         recalled = self._recall.last_recalled_ids()
-        new = self._capture.apply_new(res.new, self._scope(), explicit=True, turn_id=None,
-                                      mode=_ASK_MODE)
+        new, created = self._apply_new(res.new, rec)
         if new.id == old.id:
-            return "Updated: " + new.content, []
-        new.supersedes_id = old.id
-        self._store.update(new)
+            return "I already have that.", False
+        if created or new.supersedes_id is None:
+            new.supersedes_id = old.id
+            self._store.update(new)
+            if not created:
+                rec.linked.append(new.id)
         old.status = Status.SUPERSEDED
         old.superseded_by_id = new.id
         self._store.update(old)
+        rec.changed.append(old.id)
         if old.id in recalled:
-            self._log(EventLabel.STALE, old.id, self._context(old, vec, recalled))
-        return "Updated: " + new.content, [old.id, new.id]
+            rec.events.append(self._log(EventLabel.STALE, old.id,
+                                        self._context(old, rec.vec, recalled)))
+        return "Updated: " + new.content, True
 
-    def _run_complete(self, targets: List[Memory], res, vec: np.ndarray) -> Tuple[str, List[str]]:
+    def _run_complete(self, targets: List[Memory], res, rec: _Executed) -> Tuple[str, bool]:
         features = [m for m in targets if m.kind == MemoryKind.FEATURE]
         if not features:
-            return _UNRESOLVED, []
+            return _UNRESOLVED, False
         for m in features:
             m.completed_at = self._clock.now()
             self._store.update(m)
-        return "Marked done: " + "; ".join(m.content for m in features), [m.id for m in features]
+            rec.changed.append(m.id)
+        return "Marked done: " + "; ".join(m.content for m in features), True
 
     def _run_ask(self, vec: np.ndarray) -> str:
         p, scope = self._params(), self._scope()
@@ -282,31 +296,31 @@ class HandleMemoryOpUseCase:
 
     # ---- undo ----
 
-    def _revert(self, op: MemoryOp, ids: List[str]) -> str:
-        mems = [m for m in (self._store.get(i) for i in ids) if m is not None]
-        if op == MemoryOp.FORGET:
-            for m in mems:
-                m.status = Status.CURRENT
-            spoken = "Okay, I've kept: "
-        elif op == MemoryOp.STORE:
-            for m in mems:
-                m.status = Status.FORGOTTEN
-            spoken = "Okay, I won't keep: "
-        elif op == MemoryOp.REVISE:
-            old, new = mems[0], mems[1]
-            old.status, old.superseded_by_id = Status.CURRENT, None
-            new.status, new.supersedes_id = Status.FORGOTTEN, None
-            mems = [old, new]
-            spoken = "Okay, back to: "
-        else:
-            for m in mems:
+    def _revert(self, rec: _Executed) -> str:
+        self._store.delete_events(rec.events)
+
+        def load(ids: List[str]) -> List[Memory]:
+            return [m for m in (self._store.get(i) for i in ids) if m is not None]
+
+        changed, created, linked = load(rec.changed), load(rec.created), load(rec.linked)
+        if rec.op == MemoryOp.STORE and not created:
+            return "Nothing to undo."
+        for m in changed:
+            if rec.op == MemoryOp.COMPLETE:
                 m.completed_at = None
-            spoken = "Okay, not done yet: "
-        for m in mems:
+            else:
+                m.status, m.superseded_by_id = Status.CURRENT, None
+        for m in created:
+            m.status, m.supersedes_id = Status.FORGOTTEN, None
+        for m in linked:
+            m.supersedes_id = None
+        for m in changed + created + linked:
             self._store.update(m)
         self._recall.invalidate_profile()
-        shown = mems[:1] if op == MemoryOp.REVISE else mems
-        return spoken + "; ".join(m.content for m in shown)
+        prefix = {MemoryOp.FORGET: "Okay, I've kept: ", MemoryOp.STORE: "Okay, I won't keep: ",
+                  MemoryOp.REVISE: "Okay, back to: ", MemoryOp.COMPLETE: "Okay, not done yet: "}
+        shown = created if rec.op == MemoryOp.STORE else changed
+        return prefix[rec.op] + "; ".join(m.content for m in shown)
 
     # ---- helpers ----
 
@@ -328,19 +342,35 @@ class HandleMemoryOpUseCase:
                 "similarity": cosine(m.embedding, vec), "scope": m.scope,
                 "query_scope": self._scope(), "mode": _ASK_MODE}
 
-    def _log_late_extraction(self, vec: np.ndarray) -> None:
+    def _apply_new(self, nm, rec: _Executed) -> Tuple[Memory, bool]:
+        """capture.apply_new, telling a fresh insert apart from a dedup hit."""
+        before = {m.id for m in self._store.list(Status.CURRENT, _RECALLABLE_KINDS)}
+        m = self._capture.apply_new(nm, self._scope(), explicit=True, turn_id=None,
+                                    mode=_ASK_MODE)
+        created = m.id not in before
+        if created:
+            rec.created.append(m.id)
+        return m, created
+
+    def _log_late_extraction(self, vec: np.ndarray) -> List[str]:
         pending = self._store.pending_turns()
         floor = self._params().get("recall_similarity_floor")
         if any(cosine(t.embedding, vec) >= floor for t in pending):
-            self._log(EventLabel.LATE_EXTRACTION, None,
-                      {"buffer_salience": sum(t.salience for t in pending)})
+            return [self._log(EventLabel.LATE_EXTRACTION, None,
+                              {"buffer_salience": sum(t.salience for t in pending)})]
+        return []
 
-    def _log(self, label: EventLabel, memory_id: Optional[str], context: Dict[str, Any]) -> None:
+    def _log(self, label: EventLabel, memory_id: Optional[str], context: Dict[str, Any]) -> str:
+        event_id = str(uuid.uuid4())
         self._store.add_event(MemoryEvent(
-            str(uuid.uuid4()), self._clock.now(), label, memory_id, None, context))
+            event_id, self._clock.now(), label, memory_id, None, context))
+        return event_id
 
 
 def _is_yes(utterance: str) -> bool:
     words = re.sub(r"[^a-z' ]", " ", utterance.lower()).split()
-    text = " ".join(words)
-    return any(text == w or text.startswith(w + " ") for w in _YES_WORDS)
+    if any(w in _NEGATIONS for w in words):
+        return False
+    while len(words) > 1 and words[-1] in _POLITE_TAIL:
+        words.pop()
+    return " ".join(words) in _YES_WORDS

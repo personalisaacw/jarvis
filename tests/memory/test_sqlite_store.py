@@ -169,6 +169,14 @@ def test_events_since(store, embedder):
     assert first.context == {"similarity": 0.8} and first.turn_id == "t1"
 
 
+def test_delete_events_removes_only_named_events(store):
+    store.add_event(MemoryEvent("e1", 10.0, EventLabel.HIT, "m1", None, {}))
+    store.add_event(MemoryEvent("e2", 20.0, EventLabel.MISS, None, None, {}))
+    assert store.delete_events(["e1", "nope"]) == 1
+    assert [e.id for e in store.events_since(0.0)] == ["e2"]
+    assert store.delete_events([]) == 0
+
+
 def test_params_default_then_saved(store):
     assert store.load_params().get("recall_k") == 6
     store.save_params(

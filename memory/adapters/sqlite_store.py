@@ -327,6 +327,15 @@ class SqliteMemoryStore(IMemoryStore, IVectorStore):
             )
             self._conn.commit()
 
+    def delete_events(self, event_ids: List[str]) -> int:
+        if not event_ids:
+            return 0
+        ph, vals = _in_clause(event_ids)
+        with self._lock:
+            n = self._conn.execute("DELETE FROM memory_events WHERE id IN " + ph, vals).rowcount
+            self._conn.commit()
+        return n
+
     def events_since(self, at: float) -> List[MemoryEvent]:
         with self._lock:
             rows = self._conn.execute(

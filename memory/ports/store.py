@@ -66,6 +66,9 @@ class IMemoryStore(ABC):
     def add_event(self, e: MemoryEvent) -> None: ...
 
     @abstractmethod
+    def delete_events(self, event_ids: List[str]) -> int: ...
+
+    @abstractmethod
     def events_since(self, at: float) -> List[MemoryEvent]: ...
 
     # params

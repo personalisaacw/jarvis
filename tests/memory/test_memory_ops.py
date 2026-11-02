@@ -61,11 +61,6 @@ def classifier(store, clock, params):
 
 
 @pytest.fixture
-def params_mid(params):
-    return params.with_value("memory_op_threshold", 0.95)
-
-
-@pytest.fixture
 def extractor():
     return FakeExtractor()
 
@@ -114,8 +109,8 @@ def put(store, clock, text, kind=MemoryKind.FACT, tier=Tier.ACTIVE,
 
 
 def near(text: str, similarity: float) -> np.ndarray:
-    """A unit vector whose cosine to vec(text) is about `similarity`."""
-    u, w = vec(text), vec("orthogonal filler for " + text)
+    """A unit vector whose cosine to vec(text) is `similarity` (float32 rounding aside)."""
+    u, w = vec(text), vec("orthogonal filler for %s at %s" % (text, similarity))
     w = w - np.dot(w, u) * u
     w = w / np.linalg.norm(w)
     v = similarity * u + np.sqrt(1 - similarity ** 2) * w
@@ -162,9 +157,20 @@ def test_classifier_empty_store_falls_through(classifier):
     assert classifier.execute(vec("remember this")).action == "fallthrough"
 
 
-def test_classifier_executes_above_threshold(seeded, classifier, embedder):
-    d = classifier.execute(np.asarray(embedder.embed_text(FORGET_TEXT), dtype=np.float32))
-    assert d.op == MemoryOp.FORGET and d.action == "execute" and d.score >= 0.7
+def test_seeded_forget_phrase_does_not_fall_through(seeded, classifier):
+    assert seeded == sum(len(v) for v in SEEDS.values())
+    d = classifier.execute(vec(FORGET_TEXT))
+    assert d.op == MemoryOp.FORGET and d.action in {"execute", "ask"}
+
+
+def test_classifier_executes_above_threshold(store, clock, classifier):
+    # equal strengths; weights 1.0 (forget) and 0.25 (store): score = 1.0/1.25 * 1.0 = 0.8
+    q = "drop the faiss note"
+    proto(store, clock, "forget proto", MemoryOp.FORGET, embedding=near(q, 1.0))
+    proto(store, clock, "store proto", MemoryOp.STORE, embedding=near(q, 0.25))
+    d = classifier.execute(vec(q))
+    assert d.op == MemoryOp.FORGET and d.action == "execute"
+    assert d.score == pytest.approx(0.8, abs=1e-3)
 
 
 def test_classifier_none_label_falls_through(seeded, classifier):
@@ -173,9 +179,14 @@ def test_classifier_none_label_falls_through(seeded, classifier):
     assert classifier.execute(vec("an utterance nobody ever seeded")).action == "fallthrough"
 
 
-def test_classifier_medium_score_asks(seeded, store, clock, params_mid):
-    d = ClassifyMemoryOpUseCase(store, lambda: params_mid, clock).execute(vec(FORGET_TEXT))
-    assert d.op == MemoryOp.FORGET and d.action == "ask" and 0.5 <= d.score < 0.95
+def test_classifier_medium_score_asks(store, clock, classifier):
+    # weights 0.9 (forget) and 0.6 (store): score = 0.9/1.5 * 0.9 = 0.54, between 0.5 and 0.7
+    q = "drop the faiss note"
+    proto(store, clock, "forget proto", MemoryOp.FORGET, embedding=near(q, 0.9))
+    proto(store, clock, "store proto", MemoryOp.STORE, embedding=near(q, 0.6))
+    d = classifier.execute(vec(q))
+    assert d.op == MemoryOp.FORGET and d.action == "ask"
+    assert d.score == pytest.approx(0.54, abs=1e-3)
 
 
 def test_classifier_split_vote_prefers_op_over_none_and_only_restricts(store, clock, classifier):
@@ -363,3 +374,63 @@ def test_undo_window_closes_after_one_turn(handler, store, clock, extractor):
 def test_fallthrough_not_consumed(handler):
     assert handler.handle("what time is it", vec("what time is it"), []).consumed is False
 
+
+
+@pytest.mark.parametrize("answer", ["please don't", "yeah no", "sure, not now", "nope"])
+def test_negated_or_mixed_answers_are_no(handler, store, clock, extractor, answer):
+    extractor.resolution = OpResolution([], NewMemory(MemoryKind.FACT, "project", "acme", 0.4))
+    ask_medium(handler, store, clock)
+    out = say(handler, answer)
+    assert out.consumed and store.list(Status.CURRENT, [MemoryKind.FACT]) == []
+    assert len(events(store, EventLabel.FALSE_OP)) == 1
+
+
+@pytest.mark.parametrize("answer", ["yes", "Yes please!", "do it", "sure", "please"])
+def test_plain_yes_answers_execute(handler, store, clock, extractor, answer):
+    extractor.resolution = OpResolution([], NewMemory(MemoryKind.FACT, "project", "acme", 0.4))
+    ask_medium(handler, store, clock)
+    assert say(handler, answer).spoken == "Noted."
+    assert [m.content for m in store.list(Status.CURRENT, [MemoryKind.FACT])] == ["acme"]
+
+
+def test_undo_after_deduplicated_store_keeps_existing_memory(handler, store, clock, extractor):
+    existing = put(store, clock, "the demo is on friday")
+    extractor.resolution = OpResolution([], NewMemory(MemoryKind.FACT, "project",
+                                                      "the demo is on friday", 0.3))
+    say(handler, STORE_TEXT)
+    out = say(handler, UNDO_TEXT)
+    assert out.consumed and out.spoken == "Nothing to undo."
+    assert store.get(existing.id).status == Status.CURRENT
+
+
+def test_undo_after_deduplicated_revise_restores_old_only(handler, store, clock, extractor):
+    old = put(store, clock, "we use faiss", kind=MemoryKind.DECISION)
+    other = put(store, clock, "we use sqlite", kind=MemoryKind.DECISION)
+    extractor.resolution = OpResolution(
+        [old.id], NewMemory(MemoryKind.DECISION, "project", "we use sqlite", 0.6))
+    say(handler, REVISE_TEXT)
+    assert store.get(old.id).superseded_by_id == other.id
+    say(handler, UNDO_TEXT)
+    old, other = store.get(old.id), store.get(other.id)
+    assert old.status == Status.CURRENT and old.superseded_by_id is None
+    assert other.status == Status.CURRENT and other.supersedes_id is None
+
+
+def test_revise_onto_itself_writes_nothing(handler, store, clock, extractor):
+    old = put(store, clock, "we use faiss", kind=MemoryKind.DECISION)
+    extractor.resolution = OpResolution(
+        [old.id], NewMemory(MemoryKind.DECISION, "project", "we use faiss", 0.6))
+    assert say(handler, REVISE_TEXT).spoken == "I already have that."
+    assert store.get(old.id).status == Status.CURRENT
+    assert events(store, EventLabel.STALE) == []
+
+
+def test_undo_withdraws_the_ops_events(handler, store, clock, extractor, recall):
+    m = put(store, clock, "we plan a diff reviewer")
+    recall.execute(m.embedding, SCOPE, "think")
+    extractor.resolution = OpResolution([m.id])
+    say(handler, FORGET_TEXT)
+    assert len(events(store, EventLabel.FALSE_RECALL)) == 1
+    say(handler, UNDO_TEXT)
+    assert events(store, EventLabel.FALSE_RECALL) == []
+    assert len(events(store, EventLabel.FALSE_OP)) == 1
