@@ -28,7 +28,7 @@ The same engine replaces the router's FAISS training store so route examples als
 | Coding tasks get the raw transcript as prompt; context lives only inside `agy -c` | `jarvis.py:93-100`, `agent_adapter/manager.py` | Prompt is prefixed with project memory (features in progress, standing decisions) |
 | Transcript is embedded once, inside `RouteCommandUseCase.execute` | `use_cases/routing.py:14` | Embedded once in `main_loop`; the vector is shared by routing, the memory-op classifier, salience and recall |
 | No memory voice commands | — | Semantic memory-op classifier (Net 1) intercepts store / forget / revise / complete / ask / status before route confirmation; batched extractor (Net 2) catches implicit updates |
-| Tests: `tests/test_router.py` covers routing only | `tests/` | Those tests keep passing unchanged; new suite under `tests/memory/` |
+| Tests: `tests/test_router.py` is the only routing test and is currently broken (expects a tuple from `determine_intent`, which returns `RoutingResult`; imports `jarvis.py`, which loads Whisper and Piper) | `tests/` | `tests/test_router.py` rewritten against `RouteCommandUseCase` with the new store, same three routings; new suite under `tests/memory/` |
 
 Ports `IVectorStore` and `IEmbeddingEngine` (`domain/ports.py`) and `RouteCommandUseCase` / `LearnFromFeedbackUseCase` interfaces are **kept**; `RouteCommandUseCase.execute` gains an optional `vector=` argument so the shared embedding can be passed in.
 
@@ -420,7 +420,7 @@ All under `tests/memory/`, pytest, no network, no model downloads (a `FakeEmbedd
 | `sleep` | pending buffer flushed first; episodes fold into summaries and are archived; summaries inherit accesses; dedup keeps the stronger across all kinds; purge respects retention; profile block refreshed; dry-run writes nothing; `last_sleep_at` untouched on exception |
 | `tune` | synthetic logs with known answers: decisions always missed → `decay.decision` decreases; episodes always irrelevant → `decay.episode` up or `recall_k`/`budget` down; many `empty_extraction` → `extract_salience_threshold` up; many `late_extraction` → down; many `false_op` → `memory_op_threshold` up; many `missed_op` → `memory_op_ask_threshold` down; under `min_events` → no move; bounds never exceeded; margin prevents flip-flop over two passes; both invariants hold |
 | end-to-end | brainstorm-like turns flush after two turns while low-salience turns accumulate to the idle flush; capture → recall shows it in the working set → "we're not using FAISS anymore" (Net 1 `revise`) → recall shows the replacement only → advance clock past summary age → sleep → episode archived, summary active → tuner moved at most 3 params |
-| regression | `tests/test_router.py` unchanged and passing with the new store and the optional `vector=` argument |
+| regression | `tests/test_router.py` rewritten to exercise `RouteCommandUseCase` + `LearnFromFeedbackUseCase` on the new store with the three sentences it asserts today, without importing `jarvis.py`; `tests/test_agent_adapter.py` still passes |
 
 ## 12. Rollout
 
