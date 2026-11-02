@@ -22,7 +22,7 @@ from semantic_router import Route, SemanticRouter
 from semantic_router.encoders import HuggingFaceEncoder
 from piper.voice import PiperVoice
 import ollama
-from typing import Optional
+from typing import Optional, List
 from agent_adapter import AgentManager, GroqTerminalParser, RegexFallbackParser
 
 # ============================================================
@@ -74,30 +74,33 @@ CODING_VOCAB_PROMPT = (
 print("Loading Whisper STT on CPU...")
 stt_model = WhisperModel("base.en", device="cpu", compute_type="int8")
 
-from adapters.vector_store import FaissAdapter
 from adapters.embeddings import HuggingFaceAdapter
 from use_cases.routing import RouteCommandUseCase, LearnFromFeedbackUseCase
 from domain.entities import Intent
+from memory.service import MemoryService
 
 print("Loading New Router Architecture...")
-vector_store = FaissAdapter()
+project_dir = os.path.dirname(os.path.abspath(__file__))
 embedding_engine = HuggingFaceAdapter()
+memory_service = MemoryService(embedding_engine, project_dir)
+vector_store = memory_service.store
 route_use_case = RouteCommandUseCase(vector_store, embedding_engine, fallback_threshold=0.30)
 feedback_use_case = LearnFromFeedbackUseCase(vector_store, embedding_engine)
+print("[Memory] Memory service ready.")
 
 tts_lock = threading.Lock()
 
 ANTIGRAVITY_CODING_MODEL = "gemini-3.1-pro-high"
 agent_manager = None
 
-def run_antigravity_coding_task(prompt: str):
+def run_antigravity_coding_task(prompt: str, prefix: str = ""):
     """Launches Antigravity CLI via AgentManager."""
     print(f"\n[Antigravity CLI] Running coding task via AgentManager...")
     print(f"[Antigravity CLI] Prompt: '{prompt}'")
     threading.Thread(target=speak, args=("I am on it. Directing the coding task to Antigravity.",), daemon=True).start()
     project_dir = os.path.dirname(os.path.abspath(__file__))
     if agent_manager:
-        agent_manager.start_session("antigravity", prompt=prompt, cwd=project_dir)
+        agent_manager.start_session("antigravity", prompt=prefix + prompt, cwd=project_dir)
 
 # Maintain backwards compatibility
 run_opencode_with_diff = run_antigravity_coding_task
@@ -114,7 +117,7 @@ def clean_for_speech(text: str) -> str:
     text = re.sub(r'[*#_`~>]', '', text)
     return text.strip()
 
-def determine_intent(text: str):
+def determine_intent(text: str, vector: Optional[List[float]] = None):
     """
     Evaluates semantic intent using the new Vector DB UseCase.
     """
@@ -124,7 +127,7 @@ def determine_intent(text: str):
     print(f"│ Spoken:  '{text}'")
     print(f"│ Cleaned: '{clean_text}'")
     
-    result = route_use_case.execute(clean_text)
+    result = route_use_case.execute(clean_text, vector=vector)
     
     print(f"├─ [Final Decision]")
     print(f"│  Selected Route: {result.intent.value.upper()}")
@@ -365,7 +368,7 @@ def speak(text):
 
 def main_loop():
     global agent_manager
-    agent_manager = AgentManager(on_speech=speak)
+    agent_manager = AgentManager(on_speech=speak, on_coding_turn=memory_service.record_coding_turn)
     parser_type = "GroqCloud LPU" if isinstance(agent_manager.parser, GroqTerminalParser) else "Regex Fallback"
     print(f"[Agent Adapter] Active Parser: {parser_type}")
     speak(f"JARVIS online. Active model is {ACTIVE_MODEL}.")
@@ -457,9 +460,21 @@ def main_loop():
                 agent_manager.send_input(transcript)
                 continue
 
-            # 3. Manual Route Confirmation (Training Mode)
+            # 3. Memory operations ("remember that...", "forget...", etc.)
+            vec = memory_service.embed(transcript)
+            try:
+                reply = memory_service.try_memory_op(transcript, vec)
+            except Exception as e:
+                print(f"[Memory] Warning: memory op failed: {e}")
+                reply = None
+            if reply:
+                print(f"[Memory] {reply}")
+                speak(reply)
+                continue
+
+            # 4. Manual Route Confirmation (Training Mode)
             # determine_intent is called just to log the current vector DB state
-            determine_intent(transcript)
+            determine_intent(transcript, vector=vec.tolist())
             
             speak("Route to quick, think, or code?")
             print("\n[Waiting for route confirmation (Say route name or press 1, 2, or 3)...]")
@@ -496,12 +511,28 @@ def main_loop():
             print(f"[Router: {mode_key.upper()} | Model: {ACTIVE_MODEL}]")
 
             if mode_key == "code":
-                run_antigravity_coding_task(transcript)
+                prefix = ""
+                try:
+                    memory_service.on_mode_switch_to_code()
+                    rr = memory_service.recall_for_prompt(vec, "code")
+                    print(f"[Memory] {len(rr.memories)} recalled, {len(rr.newly_added)} new")
+                    prefix = memory_service.code_prefix(rr)
+                except Exception as e:
+                    print(f"[Memory] Warning: recall failed: {e}")
+                run_antigravity_coding_task(transcript, prefix=prefix)
                 continue
 
-            # Dynamic System Prompt Selection
+            # Dynamic System Prompt Selection (with recalled memories)
+            try:
+                rr = memory_service.recall_for_prompt(vec, mode_key)
+                print(f"[Memory] {len(rr.memories)} recalled, {len(rr.newly_added)} new")
+                system_content = memory_service.system_prompt(SYSTEM_PROMPTS[mode_key], rr)
+            except Exception as e:
+                print(f"[Memory] Warning: recall failed: {e}")
+                rr = None
+                system_content = SYSTEM_PROMPTS[mode_key]
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPTS[mode_key]},
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": transcript}
             ]
 
@@ -516,6 +547,7 @@ def main_loop():
             )
             
             sentence_buffer = ""
+            full_reply = ""
             first_token = True
             
             for chunk in stream:
@@ -527,6 +559,7 @@ def main_loop():
 
                     print(content, end='', flush=True)
                     sentence_buffer += content
+                    full_reply += content
                     
                     # Sentence boundary trigger for instant speech streaming
                     if any(punc in content for punc in ['.', '!', '?', '\n']):
@@ -536,6 +569,12 @@ def main_loop():
             # Handle final trailing sentence
             if sentence_buffer.strip():
                 threading.Thread(target=speak, args=(sentence_buffer,)).start()
+
+            if rr is not None:
+                try:
+                    memory_service.record_turn(transcript, full_reply, mode_key, vec, rr, op_fired=False)
+                except Exception as e:
+                    print(f"[Memory] Warning: record_turn failed: {e}")
                 
             print()
             

@@ -107,3 +107,54 @@ def test_agent_manager_cli_lifecycle():
 
     assert manager.has_active_session() is False
     assert any("finished" in msg.lower() or "completed" in msg.lower() or "input" in msg.lower() for msg in spoken_messages)
+
+
+def _coding_turn_manager(last_completed_session):
+    calls = []
+
+    def spy(prompt, accepted, rejected, files, cwd):
+        calls.append((prompt, accepted, rejected, files, cwd))
+
+    manager = AgentManager(parser=RegexFallbackParser(), on_speech=None, on_coding_turn=spy)
+    manager._last_prompt = "p"
+    manager._last_cwd = "/w"
+    manager._is_reviewing = True
+    manager.review_coordinator = MagicMock(last_completed_session=last_completed_session)
+    return manager, calls
+
+
+def test_finish_review_reports_coding_turn():
+    session = MagicMock(accepted_count=2, rejected_count=1, file_diffs=[MagicMock(file_path="a.py")])
+    manager, calls = _coding_turn_manager(session)
+
+    manager._finish_review()
+
+    assert calls == [("p", 2, 1, ["a.py"], "/w")]
+    assert manager._is_reviewing is False
+    assert manager.review_coordinator is None
+
+
+def test_finish_review_reports_zeros_without_completed_session():
+    manager, calls = _coding_turn_manager(None)
+
+    manager._finish_review()
+
+    assert calls == [("p", 0, 0, [], "/w")]
+    assert manager._is_reviewing is False
+
+
+def test_finish_review_survives_coding_turn_failure(capsys):
+    def boom(*args):
+        raise RuntimeError("store down")
+
+    manager = AgentManager(parser=RegexFallbackParser(), on_speech=None, on_coding_turn=boom)
+    manager._last_prompt = "p"
+    manager._last_cwd = "/w"
+    manager._is_reviewing = True
+    manager.review_coordinator = MagicMock(last_completed_session=None)
+
+    manager._finish_review()
+
+    assert manager._is_reviewing is False
+    assert manager.review_coordinator is None
+    assert "on_coding_turn failed: store down" in capsys.readouterr().out

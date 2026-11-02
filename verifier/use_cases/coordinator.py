@@ -11,6 +11,7 @@ class ReviewSessionCoordinator(IReviewCommandPort):
         self.diff_engine = diff_engine
         self.presenter = presenter
         self.active_session: Optional[ReviewSession] = None
+        self.last_completed_session: Optional[ReviewSession] = None
 
     def start_session(self, workspace_root: str) -> None:
         baseline_token = self.diff_engine.capture_baseline(workspace_root)
@@ -34,6 +35,7 @@ class ReviewSessionCoordinator(IReviewCommandPort):
         if not file_diffs:
             self.active_session.state = SessionState.COMPLETED
             self.presenter.on_session_completed(self.active_session)
+            self.last_completed_session = self.active_session
             self.active_session = None
             return
 
@@ -88,6 +90,7 @@ class ReviewSessionCoordinator(IReviewCommandPort):
         else:
             self.active_session.state = SessionState.COMPLETED
             self.presenter.on_session_completed(self.active_session)
+            self.last_completed_session = self.active_session
             self.active_session = None
 
     def _advance_pointer(self):
@@ -109,6 +112,7 @@ class ReviewSessionCoordinator(IReviewCommandPort):
                     h.status = HunkStatus.ACCEPTED
             self.active_session.state = SessionState.COMPLETED
             self.presenter.on_session_completed(self.active_session)
+            self.last_completed_session = self.active_session
             self.active_session = None
 
     def reject_all(self) -> None:
@@ -120,6 +124,7 @@ class ReviewSessionCoordinator(IReviewCommandPort):
                     h.status = HunkStatus.REJECTED
             self.active_session.state = SessionState.COMPLETED
             self.presenter.on_session_completed(self.active_session)
+            self.last_completed_session = self.active_session
             self.active_session = None
 
     def explain_hunk(self, hunk_id: str) -> None:
