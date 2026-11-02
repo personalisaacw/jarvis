@@ -96,6 +96,19 @@ def test_gate_blocks_below_floor(recall, store):
     assert _recalled(store, "a") == []
 
 
+def test_gate_keeps_working_set_visible_then_evicts_after_patience(recall, store):
+    store.add(_m("alpha", id="a"))
+    assert _ids(recall.execute(vec("alpha"), SCOPE, "think")) == ["a"]
+    assert len(_recalled(store, "a")) == 1
+    patience = int(Params.defaults().get("working_set_patience"))
+    for _ in range(patience - 1):
+        r = recall.execute(vec("beta"), SCOPE, "think")
+        assert _ids(r) == ["a"] and r.newly_added == []
+        assert len(_recalled(store, "a")) == 1
+    r = recall.execute(vec("beta"), SCOPE, "think")
+    assert r.memories == [] and r.newly_added == []
+
+
 def test_budget_quick_is_two(recall, store):
     for i in range(5):
         store.add(_m("same", id="a%d" % i, importance=1.0 + i * 0.1))

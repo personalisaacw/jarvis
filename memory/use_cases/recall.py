@@ -145,10 +145,8 @@ class RecallUseCase:
         in_profile = {m.id for m in profile.preferences + profile.features}
         candidates = self._candidates([s for s in scored if s[0].id not in in_profile], p)
         chosen = self._gate_and_budget(candidates, scored, in_profile, project_scope, mode, p, now)
-        if chosen is None:
-            return self._result([], [], turns, profile)
-
-        added = self.working_set.merge(chosen, int(p.get("working_set_patience")))
+        # A blocked gate still ticks miss counters, so the set keeps rendering but can age out.
+        added = self.working_set.merge(chosen or [], int(p.get("working_set_patience")))
         for m in added:
             self._store.add_access(m.id, now, AccessKind.RECALLED)
         return self._result(self.working_set.members(), added, turns, profile)
