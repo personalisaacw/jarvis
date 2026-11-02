@@ -4,6 +4,7 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
+from domain.ports import IEmbeddingEngine
 from memory.domain.entities import (
     GLOBAL_SCOPE, Memory, MemoryKind, NewMemory, Status, Tier,
 )
@@ -12,6 +13,7 @@ from memory.domain.scoring import strength, tier_for
 from memory.ports.clock import IClock
 from memory.ports.extractor import IMemoryExtractor
 from memory.ports.store import IMemoryStore
+from memory.use_cases.extraction_buffer import ExtractionBuffer
 
 MIN_EPISODES_TO_SUMMARISE = 3
 
@@ -36,12 +38,12 @@ class SleepUseCase:
         self,
         store: IMemoryStore,
         extractor: IMemoryExtractor,
-        buffer,
+        buffer: Optional[ExtractionBuffer],
         tuner,
         params_provider: Callable[[], Params],
         clock: IClock,
         on_done: Optional[Callable[[], None]] = None,
-        embedder=None,
+        embedder: Optional[IEmbeddingEngine] = None,
         tuner_for_store: Optional[Callable[[IMemoryStore], object]] = None,
     ):
         self._store = store
@@ -71,6 +73,9 @@ class SleepUseCase:
                     embedder=self._embedder,
                 )
                 report = trial._run_steps(dry_run=True)
+            except Exception as e:
+                print("[Memory/Sleep] failed: %s" % e)
+                raise
             finally:
                 copy.close()
             return report
@@ -98,6 +103,8 @@ class SleepUseCase:
     def _rescore(self, now: float, p: Params) -> int:
         changed = 0
         for m in self._store.list(Status.CURRENT):
+            if m.feature_id is not None:  # folded into a summary: tier pinned at ARCHIVED
+                continue
             tier = tier_for(strength(m, now, p), p)
             if tier != m.tier:
                 m.tier = tier
@@ -109,7 +116,7 @@ class SleepUseCase:
         cutoff = now - p.get("episode_summary_age_days") * 86400
         by_scope: Dict[str, List[Memory]] = {}
         for m in self._store.list(Status.CURRENT, [MemoryKind.EPISODE]):
-            if m.scope != GLOBAL_SCOPE and m.created_at < cutoff:
+            if m.scope != GLOBAL_SCOPE and m.created_at < cutoff and m.feature_id is None:
                 by_scope.setdefault(m.scope, []).append(m)
         created = 0
         for scope, episodes in by_scope.items():

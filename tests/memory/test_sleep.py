@@ -229,3 +229,27 @@ def test_dry_run_tunes_the_copy_when_factory_given(
     report = uc.run(dry_run=True)
     assert len(seen) == 1 and seen[0] is not store
     assert report.tune["status"] == "insufficient_data"
+
+
+def test_second_sleep_does_not_resummarise_folded_episodes(sleep, store, clock, extractor):
+    add_episodes(store, clock)
+    sleep.run()
+    clock.advance(DAY)
+    report = sleep.run()
+    assert report.summarised == 0
+    assert len([c for c in extractor.calls if c[0] == "summarise"]) == 1
+    assert len(store.list(Status.CURRENT, [MemoryKind.FEATURE], S)) == 1
+
+
+def test_folded_episodes_stay_archived_after_later_rescore(sleep, store, clock, extractor):
+    add_episodes(store, clock)
+    for i in range(3):  # strong enough that a naive rescore would reactivate them
+        ep = store.get(ep_id(S, i))
+        ep.importance = 2.0
+        store.update(ep)
+    sleep.run()
+    extractor.summaries = []  # a second pass must not re-fold them to hide a rescore flip
+    clock.advance(DAY)
+    sleep.run()
+    for i in range(3):
+        assert store.get(ep_id(S, i)).tier == Tier.ARCHIVED
