@@ -445,6 +445,17 @@ class SqliteMemoryStore(IMemoryStore, IVectorStore):
             self._conn.commit()
             return cur.rowcount
 
+    def extraction_batches(self, since: float) -> List[Tuple[float, int, float]]:
+        """(extracted_at, turn count, total salience) per batch of retained extracted turns."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT extracted_at, COUNT(*), SUM(salience) FROM turns "
+                "WHERE extracted_at IS NOT NULL AND extracted_at >= ? "
+                "GROUP BY extracted_at ORDER BY extracted_at",
+                (since,),
+            ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
     # ---- purge / report ----
 
     def purge(self, before: float) -> int:

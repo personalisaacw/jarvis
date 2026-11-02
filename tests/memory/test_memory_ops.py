@@ -6,6 +6,7 @@ import pytest
 
 from memory.adapters.memory_op_seeds import SEEDS, seed_memory_ops
 from memory.adapters.sqlite_store import SqliteMemoryStore
+from memory.domain.params import Params
 from memory.domain.entities import (
     GLOBAL_SCOPE,
     AccessKind,
@@ -434,3 +435,13 @@ def test_undo_withdraws_the_ops_events(handler, store, clock, extractor, recall)
     say(handler, UNDO_TEXT)
     assert events(store, EventLabel.FALSE_RECALL) == []
     assert len(events(store, EventLabel.FALSE_OP)) == 1
+
+
+def test_fallthrough_outcome_carries_classifier_score(handler, store, clock):
+    q = "maybe note the build flag"
+    proto(store, clock, "weak store proto", MemoryOp.STORE, embedding=near(q, 0.4))
+    out = say(handler, q)
+    assert out.consumed is False
+    expected = ClassifyMemoryOpUseCase(store, lambda: Params.defaults(), clock).execute(vec(q))
+    assert expected.action == "fallthrough" and expected.score > 0.0
+    assert out.score == pytest.approx(expected.score)

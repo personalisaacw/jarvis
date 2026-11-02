@@ -72,6 +72,7 @@ class OpOutcome:
     spoken: str
     consumed: bool
     pending_question: Optional[PendingAsk]
+    score: float = 0.0  # the Net 1 score behind this outcome (for missed_op context)
 
 
 class ClassifyMemoryOpUseCase:
@@ -162,20 +163,21 @@ class HandleMemoryOpUseCase:
                 self.learn(pending.utterance, pending.vec, pending.op, False,
                            EventLabel.FALSE_OP, pending.score)
                 spoken = "Okay, I'll leave it."
-            return OpOutcome(spoken, True, None)
+            return OpOutcome(spoken, True, None, pending.score)
         if last is not None:
             if self._classifier.execute(vec, only=[MemoryOp.UNDO]).action == "execute":
                 spoken = self._revert(last)
                 self.learn(last.utterance, last.vec, last.op, False, EventLabel.FALSE_OP,
                            last.score)
-                return OpOutcome(spoken, True, None)
+                return OpOutcome(spoken, True, None, last.score)
         d = self._classifier.execute(vec)
         if d.op == MemoryOp.UNDO or d.action == "fallthrough":
-            return OpOutcome("", False, None)
+            return OpOutcome("", False, None, d.score)
         if d.action == "ask":
             self._pending = PendingAsk(d.op, utterance, vec, self._candidates(d.op, vec), d.score)
-            return OpOutcome(_QUESTIONS[d.op], True, self._pending)
-        return OpOutcome(self._run(d.op, utterance, vec, working_turns, d.score), True, None)
+            return OpOutcome(_QUESTIONS[d.op], True, self._pending, d.score)
+        return OpOutcome(self._run(d.op, utterance, vec, working_turns, d.score), True, None,
+                         d.score)
 
     def note_turn_passed(self) -> None:
         self._last_executed = None
