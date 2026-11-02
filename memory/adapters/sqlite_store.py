@@ -458,6 +458,12 @@ class SqliteMemoryStore(IMemoryStore, IVectorStore):
             self._cache = None
             return len(ids)
 
+    def copy_in_memory(self) -> "SqliteMemoryStore":
+        copy = SqliteMemoryStore(":memory:", self._clock)
+        with self._lock:
+            self._conn.backup(copy._conn)
+        return copy
+
     def count_by(self, kind_tier_scope: bool = True) -> List[Tuple[str, str, str, int]]:
         with self._lock:
             rows = self._conn.execute(

@@ -108,4 +108,8 @@ class IMemoryStore(ABC):
     def purge(self, before: float) -> int: ...
 
     @abstractmethod
+    def copy_in_memory(self) -> "IMemoryStore":
+        """Independent in-memory snapshot of the whole store (for dry runs)."""
+
+    @abstractmethod
     def count_by(self, kind_tier_scope: bool = True) -> List[Tuple[str, str, str, int]]: ...
