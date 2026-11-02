@@ -27,7 +27,6 @@ from memory.use_cases.tune import TuneParamsUseCase
 _EXAMPLE_KINDS = (MemoryKind.ROUTE_EXAMPLE, MemoryKind.MEMORY_OP_EXAMPLE)
 _RECALLABLE_KINDS = [k for k in MemoryKind if k not in _EXAMPLE_KINDS]
 _RECALL_LABELS = (EventLabel.HIT, EventLabel.FALSE_RECALL, EventLabel.MISS, EventLabel.STALE)
-_BATCH_LABELS = (EventLabel.HIT, EventLabel.FALSE_RECALL, EventLabel.EMPTY_EXTRACTION)
 _DAY = 86400.0
 _TICK_SECONDS = 5.0
 
@@ -106,9 +105,9 @@ class MemoryService:
 
     def try_memory_op(self, transcript: str, vec: np.ndarray) -> Optional[str]:
         # handle() closes the one-turn undo window itself, so no note_turn_passed() here.
+        self._pending_score = None
         outcome = self.handler.handle(transcript, vec, self._working_turns())
         if outcome.consumed:
-            self._pending_score = None
             return outcome.spoken
         self._pending_score = outcome.score
         return None
@@ -175,10 +174,9 @@ class MemoryService:
         recall = ("recalled correctly %d percent of the time"
                   % round(100.0 * n[EventLabel.HIT] / judged) if judged
                   else "have no recall data yet")
-        batches = len({e.turn_id for e in events if e.label in _BATCH_LABELS and e.turn_id})
-        line = ("I hold %d memories, %d active. Over the last %d days I %s, missed %d times "
-                "and ran %d extractions." % (total, active, FIXED["tune_window_days"], recall,
-                                             n[EventLabel.MISS], batches))
+        line = ("I hold %d memories, %d active. Over the last month I %s, missed %d times "
+                "and ran %d extractions." % (total, active, recall, n[EventLabel.MISS],
+                                             n[EventLabel.EXTRACTION]))
         last = self.store.params_history(1)
         return line + (" " + self._move_sentence(last[0]) if last else "")
 
@@ -224,6 +222,8 @@ class MemoryService:
     def _capture(self, turns: List[Turn]) -> None:
         try:
             self.capture.execute(turns, self.project_scope, sum(t.salience for t in turns))
+            for t in turns:  # scores not claimed by a missed_op are no longer needed
+                self._scores.pop(t.id, None)
             self.store.delete_turns_before(self.clock.now() - _DAY, self.session_id,
                                            int(self._params.get("working_turns")))
         except Exception as e:
@@ -285,15 +285,14 @@ class MemoryService:
         return lines or ["  (no recall events)"]
 
     def _report_extraction(self, events: List[MemoryEvent]) -> List[str]:
-        since = self.clock.now() - FIXED["tune_window_days"] * _DAY
-        batches = self.store.extraction_batches(since)
+        batches = [e.context for e in events if e.label == EventLabel.EXTRACTION]
         n = len(batches)
         empty = sum(e.label == EventLabel.EMPTY_EXTRACTION for e in events)
         late = sum(e.label == EventLabel.LATE_EXTRACTION for e in events)
-        mean_turns = sum(b[1] for b in batches) / n if n else 0.0
-        mean_sal = sum(b[2] for b in batches) / n if n else 0.0
+        mean_turns = sum(c.get("turns", 0) for c in batches) / n if n else 0.0
+        mean_sal = sum(c.get("buffer_salience", 0.0) for c in batches) / n if n else 0.0
         rate = "%d%%" % round(100.0 * empty / n) if n else "n/a"
-        return ["  batches %d (retained turns), mean turns per batch %.1f, "
+        return ["  batches %d, mean turns per batch %.1f, "
                 "mean salience at flush %.2f" % (n, mean_turns, mean_sal),
                 "  empty_extraction %d (rate %s), late_extraction %d" % (empty, rate, late)]
 

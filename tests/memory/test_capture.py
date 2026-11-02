@@ -187,7 +187,7 @@ def test_complete_sets_completed_at(store, embedder, clock):
     assert store.get("f").completed_at == clock.now()
     assert store.get("x").completed_at is None
     assert events(store, EventLabel.EMPTY_EXTRACTION) == []
-    assert len(events(store)) == 0
+    assert [e.label for e in events(store)] == [EventLabel.EXTRACTION]  # bookkeeping only
 
 
 def test_forget_marks_forgotten_and_logs_false_recall_if_recalled(store, embedder, clock):
@@ -258,3 +258,18 @@ def test_failure_retries_once_then_drops(store, embedder, clock):
     assert uc.execute([t], SCOPE, 1.0) is None
     assert not store.pending_turns()
     assert not store.get_meta("retry:t1")
+
+
+def test_one_extraction_event_per_successful_batch(store, embedder, clock):
+    ext = FakeExtractor([Extraction(new=[NewMemory(MemoryKind.FACT, "project", "a fact", 0.5)]),
+                         Extraction()])
+    uc = CaptureBatchUseCase(store, ext, embedder, lambda: Params.defaults(), clock)
+    uc.execute([turn(clock, "t1"), turn(clock, "t2")], SCOPE, 0.7)
+    (e,) = events(store, EventLabel.EXTRACTION)
+    assert (e.memory_id, e.turn_id, e.context) == (None, "t2", {"turns": 2, "buffer_salience": 0.7})
+    uc.execute([turn(clock, "t3")], SCOPE, 0.2)  # empty batch: still one EXTRACTION
+    assert len(events(store, EventLabel.EXTRACTION)) == 2
+    assert len(events(store, EventLabel.EMPTY_EXTRACTION)) == 1
+    ext.raise_next = 1
+    assert uc.execute([turn(clock, "t4")], SCOPE, 0.2) is None
+    assert len(events(store, EventLabel.EXTRACTION)) == 2  # failed batch logs nothing

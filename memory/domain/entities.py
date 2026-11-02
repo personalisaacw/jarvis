@@ -50,6 +50,7 @@ class EventLabel(str, Enum):
     LATE_EXTRACTION = "late_extraction"
     FALSE_OP = "false_op"
     MISSED_OP = "missed_op"
+    EXTRACTION = "extraction"  # bookkeeping: one per successful batch, not a tuning label
 
 
 class MemoryOp(str, Enum):

@@ -190,17 +190,20 @@ def test_status_line_mentions_counts(service):
     assert "have no recall data yet" in line
 
 
-def test_status_line_reports_rates_and_last_move(service, store):
-    for label, turn in [(EventLabel.HIT, "t1"), (EventLabel.HIT, "t1"), (EventLabel.HIT, "t2"),
-                        (EventLabel.FALSE_RECALL, "t3"), (EventLabel.MISS, None),
-                        (EventLabel.MISS, None), (EventLabel.EMPTY_EXTRACTION, "t4")]:
-        store.add_event(event(label, turn_id=turn))
+def test_status_line_reports_rates_and_last_move(service, store, clock):
+    for label in [EventLabel.HIT, EventLabel.HIT, EventLabel.HIT, EventLabel.FALSE_RECALL,
+                  EventLabel.MISS, EventLabel.MISS, EventLabel.EMPTY_EXTRACTION]:
+        store.add_event(event(label, turn_id="t1"))  # one batch with many recall events
+    for _ in range(3):
+        store.add_event(event(EventLabel.EXTRACTION, turn_id="t1", turns=2, buffer_salience=1.0))
+    store.add_event(event(EventLabel.EXTRACTION, at=clock.now() - 31 * 86400, turns=1,
+                          buffer_salience=1.0))  # outside the window
     store.save_params(Params.defaults().with_value("decay.decision", 0.25),
                       [("decay.decision", 0.3, 0.25, 2.0, 1.0, "tune")])
     line = service.status_line()
     assert "I hold 0 memories, 0 active." in line
-    assert "Over the last 30 days I recalled correctly 75 percent of the time" in line
-    assert "missed 2 times and ran 4 extractions." in line
+    assert "Over the last month I recalled correctly 75 percent of the time" in line
+    assert "missed 2 times and ran 3 extractions." in line
     assert line.endswith("Last night I slowed how fast decisions fade.")
 
 
@@ -224,6 +227,41 @@ def test_report_sections_in_order_with_moved_params_flagged(service, store):
     assert "  importance_weight = 1\n" in out
     assert "false_op 1" in out
     assert "last_sleep_at: never" in out
+    assert "batches 0, mean turns per batch 0.0" in out and "(rate n/a)" in out
+
+
+def test_report_extraction_stats_come_from_extraction_events(service, store, clock):
+    for n, sal in [(2, 1.0), (2, 2.0), (3, 1.5), (1, 0.5)]:
+        store.add_event(event(EventLabel.EXTRACTION, turns=n, buffer_salience=sal))
+    store.add_event(event(EventLabel.EXTRACTION, at=clock.now() - 31 * 86400, turns=9,
+                          buffer_salience=9.0))  # outside the window
+    store.add_event(event(EventLabel.EMPTY_EXTRACTION, buffer_salience=0.5))
+    store.add_event(event(EventLabel.LATE_EXTRACTION))
+    out = service.report()
+    assert "batches 4, mean turns per batch 2.0, mean salience at flush 1.25" in out
+    assert "empty_extraction 1 (rate 25%), late_extraction 1" in out
+
+
+def test_try_memory_op_clears_a_stale_score_first(service):
+    service._pending_score = 0.42  # left over from a turn that was never recorded
+
+    def boom(*a, **k):
+        raise RuntimeError("handler down")
+
+    service.handler.handle = boom
+    with pytest.raises(RuntimeError):
+        service.try_memory_op("hi", service.embed("hi"))
+    assert service._pending_score is None
+
+
+def test_scores_are_pruned_after_their_batch_is_captured(service, store):
+    v = service.embed("tell me about penguins")
+    assert service.try_memory_op("tell me about penguins", v) is None
+    service.record_turn("tell me about penguins", "ok", "quick", v,
+                        service.recall_for_prompt(v, "quick"), False)
+    assert len(service._scores) == 1
+    service.buffer.flush("idle")
+    assert service._scores == {}
 
 
 def test_reset_params_restores_defaults_with_history(service, store):

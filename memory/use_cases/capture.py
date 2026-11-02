@@ -99,6 +99,8 @@ class CaptureBatchUseCase:
         if extraction.is_empty():
             self._log(EventLabel.EMPTY_EXTRACTION, None, turns[-1].id,
                       {"buffer_salience": buffer_salience})
+        self._log(EventLabel.EXTRACTION, None, turns[-1].id,
+                  {"turns": len(turns), "buffer_salience": buffer_salience})
 
         self._store.mark_extracted(turn_ids, self._clock.now())
         if self._store.get_meta(retry_key):

@@ -292,3 +292,15 @@ def test_history_written_with_losses(tuner, store, clock):
     ]
     assert rows[0]["old_loss"] == 50 and rows[-1]["new_loss"] < rows[0]["old_loss"]
     assert store.load_params().get("decay.decision") == pytest.approx(0.25)
+
+
+def test_extraction_events_cost_nothing_and_are_not_tuning_data(tuner, store, clock):
+    now = clock.now()
+    bookkeeping = [event(EventLabel.EXTRACTION, at=now, turns=2, buffer_salience=1.5)
+                   for _ in range(FIXED["min_events"])]
+    assert tuner.loss(Params.defaults(), bookkeeping, now) == 0.0
+    _add(store, bookkeeping)
+    _add(store, [event(EventLabel.EMPTY_EXTRACTION, at=now, buffer_salience=1.5)
+                 for _ in range(FIXED["min_events"] - 1)])
+    assert tuner.run() == {"status": "insufficient_data", "events": FIXED["min_events"] - 1,
+                           "moves": []}

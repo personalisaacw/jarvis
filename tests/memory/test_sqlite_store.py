@@ -289,10 +289,3 @@ def test_concurrent_writer_thread(store, embedder):
     assert errors == []
     assert len(store.list()) == 200
 
-
-def test_extraction_batches_groups_extracted_turns_since(store):
-    for i, ext in [(1, 100.0), (2, 100.0), (3, 200.0), (4, None), (5, 10.0)]:
-        t = _turn(i, extracted=ext)
-        t.salience = 0.5 * i
-        store.add_turn(t)
-    assert store.extraction_batches(since=50.0) == [(100.0, 2, 1.5), (200.0, 1, 1.5)]

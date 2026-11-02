@@ -22,6 +22,7 @@ _LABEL_READS = {
     EventLabel.LATE_EXTRACTION: ("extract_salience_threshold",),
     EventLabel.FALSE_OP: ("memory_op_threshold",),
     EventLabel.MISSED_OP: ("memory_op_ask_threshold",),
+    EventLabel.EXTRACTION: (),
 }
 
 
@@ -44,6 +45,7 @@ class TuneParamsUseCase:
             EventLabel.LATE_EXTRACTION: self._cost_late_extraction,
             EventLabel.FALSE_OP: self._cost_false_op,
             EventLabel.MISSED_OP: self._cost_missed_op,
+            EventLabel.EXTRACTION: lambda e, p, t: 0.0,  # bookkeeping, not an outcome
         }
 
     # ---- public ----
@@ -54,7 +56,8 @@ class TuneParamsUseCase:
     def run(self) -> dict:
         now = self._clock.now()
         self._reset_caches()
-        events = self._store.events_since(now - FIXED["tune_window_days"] * _DAY)
+        events = [e for e in self._store.events_since(now - FIXED["tune_window_days"] * _DAY)
+                  if e.label != EventLabel.EXTRACTION]  # bookkeeping is not tuning data
         n = len(events)
         if n < FIXED["min_events"]:
             return {"status": "insufficient_data", "events": n, "moves": []}
