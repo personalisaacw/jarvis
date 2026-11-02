@@ -124,10 +124,10 @@ class MemoryService:
 
     def record_turn(
         self, user_text: str, assistant_text: str, mode: str, vec: np.ndarray,
-        recalled: RecallResult, op_fired: bool,
+        recalled: Optional[RecallResult], op_fired: bool,
     ) -> None:
-        turn = self._turn(mode, user_text, assistant_text, vec, self.project_scope,
-                          [m.id for m in recalled.memories])
+        recalled_ids = [m.id for m in recalled.memories] if recalled is not None else []
+        turn = self._turn(mode, user_text, assistant_text, vec, self.project_scope, recalled_ids)
         if self._pending_score is not None:
             self._scores[turn.id] = self._pending_score
             self._pending_score = None

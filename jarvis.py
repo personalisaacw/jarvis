@@ -100,7 +100,7 @@ def run_antigravity_coding_task(prompt: str, prefix: str = ""):
     threading.Thread(target=speak, args=("I am on it. Directing the coding task to Antigravity.",), daemon=True).start()
     project_dir = os.path.dirname(os.path.abspath(__file__))
     if agent_manager:
-        agent_manager.start_session("antigravity", prompt=prefix + prompt, cwd=project_dir)
+        agent_manager.start_session("antigravity", prompt=prefix + prompt, cwd=project_dir, memory_prompt=prompt)
 
 # Maintain backwards compatibility
 run_opencode_with_diff = run_antigravity_coding_task
@@ -470,6 +470,10 @@ def main_loop():
             if reply:
                 print(f"[Memory] {reply}")
                 speak(reply)
+                try:
+                    memory_service.record_turn(transcript, reply, "think", vec, None, op_fired=True)
+                except Exception as e:
+                    print(f"[Memory] Warning: record_turn failed: {e}")
                 continue
 
             # 4. Manual Route Confirmation (Training Mode)

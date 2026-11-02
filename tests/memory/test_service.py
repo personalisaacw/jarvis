@@ -137,6 +137,17 @@ def test_record_turn_builds_turn_with_recalled_ids(service, store):
     assert t.recalled_ids == []
 
 
+def test_record_turn_without_recall_result_records_op_turn(service, store):
+    text = "remember that I prefer tabs"
+    service.record_turn(text, "Got it.", "think", service.embed(text), None, op_fired=True)
+    turns = store.recent_turns(service.session_id, 10)
+    assert len(turns) == 1
+    t = turns[0]
+    assert (t.mode, t.user_text, t.assistant_text) == ("think", text, "Got it.")
+    assert t.recalled_ids == []
+    assert t.salience >= 1.0
+
+
 def test_record_coding_turn_flushes_session_end(service, store, extractor, tmp_path):
     cwd = str(tmp_path / "sub")
     service.record_coding_turn("add a retry", 2, 1, ["a.py", "b.py"], cwd)

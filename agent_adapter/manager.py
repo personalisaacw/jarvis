@@ -87,7 +87,8 @@ class AgentManager:
         cli_name: str,
         prompt: str,
         cwd: Optional[str] = None,
-        is_continuation: bool = False
+        is_continuation: bool = False,
+        memory_prompt: Optional[str] = None
     ) -> Optional[CLIAgentSession]:
         """Launches a new agent session for the specified CLI name and initial prompt."""
         if self.has_active_session() and not is_continuation:
@@ -107,7 +108,7 @@ class AgentManager:
 
         # ── Capture baseline for diff verification asynchronously ──
         if not is_continuation:
-            self._last_prompt = prompt
+            self._last_prompt = memory_prompt if memory_prompt is not None else prompt
             self._last_cwd = working_dir
 
             def capture_baseline():

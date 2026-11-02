@@ -158,3 +158,27 @@ def test_finish_review_survives_coding_turn_failure(capsys):
     assert manager._is_reviewing is False
     assert manager.review_coordinator is None
     assert "on_coding_turn failed: store down" in capsys.readouterr().out
+
+
+def test_start_session_records_memory_prompt_not_prefixed_prompt(tmp_path):
+    calls = []
+    manager = AgentManager(
+        parser=RegexFallbackParser(),
+        on_speech=None,
+        on_coding_turn=lambda *args: calls.append(args),
+    )
+    manager.register_cli("stub", lambda p, cwd, is_continuation: ["true"])
+
+    with patch("agent_adapter.manager.CLIAgentSession") as session_cls, \
+            patch("threading.Thread"):
+        manager.start_session(
+            "stub",
+            prompt="## Project context\n- uses SQLite\nfix it",
+            cwd=str(tmp_path),
+            memory_prompt="fix it",
+        )
+    assert session_cls.call_args.kwargs["command"] == ["true"]
+    manager.review_coordinator = MagicMock(last_completed_session=None)
+    manager._finish_review()
+
+    assert calls == [("fix it", 0, 0, [], str(tmp_path))]
