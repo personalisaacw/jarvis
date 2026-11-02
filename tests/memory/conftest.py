@@ -1,12 +1,13 @@
 import hashlib
-from typing import List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pytest
 
-from memory.domain.entities import Extraction
+from memory.domain.entities import Extraction, NewMemory, OpResolution
 from memory.domain.params import Params
 from memory.ports.clock import IClock
+from memory.ports.extractor import IMemoryExtractor
 
 
 def vec(text: str) -> np.ndarray:
@@ -35,9 +36,35 @@ class FrozenClock(IClock):
         self._t = t
 
 
-class FakeExtractor:
-    def extract(self, *args, **kwargs) -> Extraction:
-        return Extraction.from_dict({})
+class FakeExtractor(IMemoryExtractor):
+    def __init__(self, responses: Optional[List[Extraction]] = None):
+        self.responses = list(responses) if responses else [Extraction()]
+        self.resolution: Optional[OpResolution] = None
+        self.summaries: List[NewMemory] = []
+        self.raise_next: int = 0
+        self.calls: List[Tuple[str, tuple]] = []
+
+    def extract(self, turns, recalled) -> Extraction:
+        self.calls.append(("extract", (turns, recalled)))
+        if self.raise_next > 0:
+            self.raise_next -= 1
+            raise ValueError("fake failure")
+        if len(self.responses) > 1:
+            return self.responses.pop(0)
+        return self.responses[0]
+
+    def resolve_op(self, op, utterance, working_turns, candidates) -> OpResolution:
+        self.calls.append(("resolve_op", (op, utterance, working_turns, candidates)))
+        if self.resolution is not None:
+            return self.resolution
+        return OpResolution(target_ids=[candidates[0].id] if candidates else [], new=None)
+
+    def summarise(self, episodes) -> List[NewMemory]:
+        self.calls.append(("summarise", (episodes,)))
+        return self.summaries
+
+    def is_available(self) -> bool:
+        return True
 
 
 @pytest.fixture
