@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from memory.adapters.sqlite_store import SqliteMemoryStore
@@ -193,3 +194,38 @@ def test_exception_leaves_last_sleep_unset(sleep, store, clock, done, tuner):
         sleep.run()
     assert store.get_meta("last_sleep_at") is None
     assert done == []
+
+
+def test_summary_embedding_is_embedding_of_summary_text(
+    store, extractor, buffer_spy, tuner, clock, embedder
+):
+    add_episodes(store, clock)
+    uc = SleepUseCase(
+        store, extractor, buffer_spy, tuner, lambda: Params.defaults(), clock, embedder=embedder
+    )
+    uc.run()
+    feat = store.list(Status.CURRENT, [MemoryKind.FEATURE], S)[0]
+    assert np.allclose(feat.embedding, vec("built the reviewer"), atol=1e-6)
+
+
+def test_dry_run_default_does_not_tune_real_store(sleep, store, clock):
+    report = sleep.run(dry_run=True)
+    assert report.tune["status"] == "skipped_dry_run"
+    assert store.params_history() == []
+
+
+def test_dry_run_tunes_the_copy_when_factory_given(
+    store, extractor, tuner, clock
+):
+    seen = []
+
+    def factory(s):
+        seen.append(s)
+        return tuner
+
+    uc = SleepUseCase(
+        store, extractor, None, tuner, lambda: Params.defaults(), clock, tuner_for_store=factory
+    )
+    report = uc.run(dry_run=True)
+    assert len(seen) == 1 and seen[0] is not store
+    assert report.tune["status"] == "insufficient_data"

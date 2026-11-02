@@ -16,6 +16,11 @@ from memory.ports.store import IMemoryStore
 MIN_EPISODES_TO_SUMMARISE = 3
 
 
+class _SkippedTuner:
+    def run(self) -> dict:
+        return {"status": "skipped_dry_run", "events": 0, "moves": []}
+
+
 @dataclass
 class SleepReport:
     rescored: int
@@ -36,6 +41,7 @@ class SleepUseCase:
         params_provider: Callable[[], Params],
         clock: IClock,
         on_done: Optional[Callable[[], None]] = None,
+        embedder=None,
         tuner_for_store: Optional[Callable[[IMemoryStore], object]] = None,
     ):
         self._store = store
@@ -45,7 +51,8 @@ class SleepUseCase:
         self._params = params_provider
         self._clock = clock
         self._on_done = on_done
-        self._tuner_for_store = tuner_for_store or (lambda s: tuner)
+        self._embedder = embedder
+        self._tuner_for_store = tuner_for_store
 
     def is_due(self) -> bool:
         last = self._store.get_meta("last_sleep_at")
@@ -58,9 +65,10 @@ class SleepUseCase:
         if dry_run:
             copy = self._store.copy_in_memory()
             try:
+                tuner = self._tuner_for_store(copy) if self._tuner_for_store else _SkippedTuner()
                 trial = SleepUseCase(
-                    copy, self._extractor, None, self._tuner_for_store(copy), self._params,
-                    self._clock,
+                    copy, self._extractor, None, tuner, self._params, self._clock,
+                    embedder=self._embedder,
                 )
                 report = trial._run_steps(dry_run=True)
             finally:
@@ -125,11 +133,14 @@ class SleepUseCase:
         self, n: NewMemory, scope: str, episodes: List[Memory], now: float, p: Params
     ) -> Memory:
         newest = max(episodes, key=lambda m: m.last_accessed_at)
-        centroid = np.mean([m.embedding for m in episodes], axis=0)
-        norm = float(np.linalg.norm(centroid))
+        if self._embedder is not None:
+            vec = np.asarray(self._embedder.embed_text(n.content), dtype=np.float32)
+        else:  # no embedder wired: fall back to the centroid of the folded episodes
+            vec = np.mean([m.embedding for m in episodes], axis=0)
+        norm = float(np.linalg.norm(vec))
         s = Memory(
             id=str(uuid.uuid4()), kind=n.kind, scope=scope if n.scope == "project" else GLOBAL_SCOPE,
-            content=n.content, embedding=(centroid / norm if norm else centroid).astype(np.float32),
+            content=n.content, embedding=(vec / norm if norm else vec).astype(np.float32),
             importance=min(1.0, max(0.0, n.importance)), status=Status.CURRENT, tier=Tier.ACTIVE,
             created_at=now,
         )
