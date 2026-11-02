@@ -1,3 +1,4 @@
+import hashlib
 from typing import List
 
 import numpy as np
@@ -9,7 +10,8 @@ from memory.ports.clock import IClock
 
 
 def vec(text: str) -> np.ndarray:
-    rng = np.random.RandomState(hash(text) % 2 ** 32)
+    seed = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:4], "little")
+    rng = np.random.RandomState(seed)
     v = rng.randn(384).astype(np.float32)
     return (v / np.linalg.norm(v)).astype(np.float32)
 
