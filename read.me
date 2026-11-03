@@ -15,6 +15,8 @@ User Voice → STT (Whisper) → Semantic Router → Intent Classification → P
                                               │         (LLM)         (gpt-oss-120b-medium)
                                               ▼             ▼             ▼
                                            TTS Output    TTS Output   Diff UI
+
+Every pipeline recalls from and records to memory/ (SQLite, .jarvis/memory.sqlite).
 ```
 
 ## Components
@@ -22,11 +24,12 @@ User Voice → STT (Whisper) → Semantic Router → Intent Classification → P
 - **`jarvis.py`** — Main voice pipeline: STT → Semantic Router → Ollama/Antigravity CLI → TTS
 - **`router.py`** — HTTP proxy server for AnythingLLM integration, with semantic intent routing
 - **`ui_server.py`** — Code review dashboard displaying git diffs via FastAPI
+- **`memory/`** — Long-term memory: SQLite store, recall, extraction, sleep pass and self-tuning (see [Memory](#memory))
 - **`start_router.bat`** — Startup script
 
 ## Semantic Router Configuration
 
-The router uses `sentence-transformers/all-MiniLM-L6-v2` for embedding and `LocalIndex` for vector storage.
+The router uses `sentence-transformers/all-MiniLM-L6-v2` for embedding and the SQLite memory store (`memory/adapters/sqlite_store.py`) to hold route examples.
 
 ### Routes
 
@@ -39,6 +42,49 @@ The router uses `sentence-transformers/all-MiniLM-L6-v2` for embedding and `Loca
 ### Key Fix (aggregation="max")
 
 The `SemanticRouter` defaults to `aggregation="mean"` which averages top-k scores. This caused the code route's mean score (~0.44) to fall below its threshold (0.45), silently defaulting to QUICK. Using `aggregation="max"` ensures the best matching utterance score is used, correctly routing code requests.
+
+## Memory
+
+JARVIS keeps a memory of what you work on together. Recent things are vivid and recalled readily, while the bigger ideas (decisions, features, preferences) persist much longer. What you say in conversation can revise it: when a decision changes, the old memory is superseded rather than deleted. Memories that go unused fade from active to dormant to archived, old episodes are folded into summaries, and forgotten or archived memories untouched for the retention period are purged; a daily sleep pass also tunes the memory's own parameters from how well recall has been working.
+
+### Scopes
+
+- **Global** (`global`) — things true everywhere, such as your preferences.
+- **Project** (`project:<path>`) — things about one project directory, such as its decisions and features. The current project's memories rank above global ones, which rank above other projects'.
+
+### Voice operations
+
+Say these naturally; JARVIS recognises the operation by meaning, not by an exact phrase.
+
+| Operation | Example |
+|-----------|---------|
+| store | "remember that the demo is on friday" |
+| forget | "forget what I said about the deadline" |
+| revise | "we're not using faiss anymore" |
+| complete | "the reviewer's done" |
+| ask | "what did we decide about the database" |
+| status | "how's your memory" |
+| undo | "undo that" (on the turn right after an operation) |
+
+When JARVIS is fairly but not fully sure you meant an operation, it asks first ("Should I update that?") and learns from your yes or no.
+
+### Command line
+
+```bash
+python -m memory report              # counts, recall and extraction rates, params, history
+python -m memory sleep [--dry-run]   # run a consolidation pass now (--dry-run writes nothing)
+python -m memory migrate             # import old FAISS route examples, seed memory-op phrasings
+python -m memory reset-params        # restore the default tuning params
+```
+
+The database lives at `.jarvis/memory.sqlite` (override with `--db`). Extraction uses Groq when `GROQ_API_KEY` is set and falls back to the local Ollama model otherwise.
+
+### Development
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest tests/memory tests/test_router.py -q
+```
 
 ## Usage
 
