@@ -24,9 +24,15 @@ _EXAMPLE_KINDS = (MemoryKind.ROUTE_EXAMPLE, MemoryKind.MEMORY_OP_EXAMPLE)
 _RECALLABLE_KINDS = [k for k in MemoryKind if k not in _EXAMPLE_KINDS]
 _OP_ORDER = {op: i for i, op in enumerate(MemoryOp)}
 _NO_ASK = (MemoryOp.ASK, MemoryOp.STATUS)
-_YES_WORDS = {"yes", "yeah", "yep", "sure", "do it", "please", "correct"}
-_NEGATIONS = {"no", "don't", "dont", "not", "nope", "never", "wait", "stop", "cancel"}
+_YES_FIRST = {"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "absolutely", "correct",
+              "please", "affirmative"}
+_YES_PHRASES = {"do it", "go ahead", "go for it", "sure thing"}
+# "later" defers ("correct me later"), so it counts as a no rather than a yes.
+_NEGATIONS = {"no", "don't", "dont", "not", "nope", "never", "wait", "stop", "cancel", "nah",
+              "later"}
 _POLITE_TAIL = ("please", "thanks")
+_YES, _NO, _UNCLEAR = "yes", "no", "unclear"
+_WINDOW_SECONDS = 60.0  # a pending question and the undo window both expire after this
 _QUESTIONS = {
     MemoryOp.STORE: "Should I remember that?",
     MemoryOp.FORGET: "Should I forget that?",
@@ -52,6 +58,7 @@ class PendingAsk:
     vec: np.ndarray
     candidates: List[Memory] = field(default_factory=list)
     score: float = 0.0
+    asked_at: float = 0.0
 
 
 @dataclass
@@ -65,6 +72,7 @@ class _Executed:
     created: List[str] = field(default_factory=list)   # memories it inserted
     linked: List[str] = field(default_factory=list)    # pre-existing memories it linked to
     events: List[str] = field(default_factory=list)    # events it logged
+    executed_at: float = 0.0
 
 
 @dataclass
@@ -152,10 +160,18 @@ class HandleMemoryOpUseCase:
     # ---- entry points ----
 
     def handle(self, utterance: str, vec: np.ndarray, working_turns: List[Turn]) -> OpOutcome:
+        now = self._clock.now()
+        if self._pending is not None and now - self._pending.asked_at > _WINDOW_SECONDS:
+            self._pending = None  # the question went unanswered; forget it silently
         last, self._last_executed = self._last_executed, None
+        if last is not None and now - last.executed_at > _WINDOW_SECONDS:
+            last = None
         if self._pending is not None:
             pending, self._pending = self._pending, None
-            if _is_yes(utterance):
+            answer = _classify_answer(utterance)
+            if answer == _UNCLEAR:  # not an answer: learn nothing, let the turn flow on
+                return OpOutcome("", False, None, 0.0)
+            if answer == _YES:
                 self.learn(pending.utterance, pending.vec, pending.op, True, None, pending.score)
                 spoken = self._run(pending.op, pending.utterance, pending.vec, working_turns,
                                    pending.score, pending.candidates)
@@ -174,7 +190,8 @@ class HandleMemoryOpUseCase:
         if d.op == MemoryOp.UNDO or d.action == "fallthrough":
             return OpOutcome("", False, None, d.score)
         if d.action == "ask":
-            self._pending = PendingAsk(d.op, utterance, vec, self._candidates(d.op, vec), d.score)
+            self._pending = PendingAsk(d.op, utterance, vec, self._candidates(d.op, vec), d.score,
+                                       now)
             return OpOutcome(_QUESTIONS[d.op], True, self._pending, d.score)
         return OpOutcome(self._run(d.op, utterance, vec, working_turns, d.score), True, None,
                          d.score)
@@ -208,7 +225,7 @@ class HandleMemoryOpUseCase:
             return self._run_ask(vec)
         if op == MemoryOp.STATUS:
             return self._status_line()
-        rec = _Executed(op, utterance, vec, score)
+        rec = _Executed(op, utterance, vec, score, executed_at=self._clock.now())
         if op != MemoryOp.STORE and candidates is None:
             candidates = self._candidates(op, vec)
         try:
@@ -369,10 +386,15 @@ class HandleMemoryOpUseCase:
         return event_id
 
 
-def _is_yes(utterance: str) -> bool:
-    words = re.sub(r"[^a-z' ]", " ", utterance.lower()).split()
-    if any(w in _NEGATIONS for w in words):
-        return False
+def _classify_answer(utterance: str) -> str:
+    """"yes", "no" or "unclear" for the reply to a confirmation question."""
+    text = utterance.lower().replace("\u2019", "'")
+    words = [w.strip("'") for w in re.sub(r"[^a-z' ]", " ", text).split()]
+    words = [w for w in words if w]
     while len(words) > 1 and words[-1] in _POLITE_TAIL:
         words.pop()
-    return " ".join(words) in _YES_WORDS
+    if any(w in _NEGATIONS for w in words):
+        return _NO
+    if words and (words[0] in _YES_FIRST or " ".join(words) in _YES_PHRASES):
+        return _YES
+    return _UNCLEAR

@@ -377,7 +377,8 @@ def test_fallthrough_not_consumed(handler):
 
 
 
-@pytest.mark.parametrize("answer", ["please don't", "yeah no", "sure, not now", "nope"])
+@pytest.mark.parametrize("answer", ["please don't", "yeah no", "sure, not now", "nope",
+                                    "correct me later", "No.", "nah", "don\u2019t"])
 def test_negated_or_mixed_answers_are_no(handler, store, clock, extractor, answer):
     extractor.resolution = OpResolution([], NewMemory(MemoryKind.FACT, "project", "acme", 0.4))
     ask_medium(handler, store, clock)
@@ -386,7 +387,10 @@ def test_negated_or_mixed_answers_are_no(handler, store, clock, extractor, answe
     assert len(events(store, EventLabel.FALSE_OP)) == 1
 
 
-@pytest.mark.parametrize("answer", ["yes", "Yes please!", "do it", "sure", "please"])
+@pytest.mark.parametrize("answer", ["yes", "Yes please!", "do it", "sure", "please", "Okay.",
+                                    "OK", "Yup", "Absolutely", "Yes, remember that.",
+                                    "Yeah, sure.", "Yes please do", "Sure thing", "go ahead",
+                                    "correct", "yes thanks"])
 def test_plain_yes_answers_execute(handler, store, clock, extractor, answer):
     extractor.resolution = OpResolution([], NewMemory(MemoryKind.FACT, "project", "acme", 0.4))
     ask_medium(handler, store, clock)
@@ -445,3 +449,49 @@ def test_fallthrough_outcome_carries_classifier_score(handler, store, clock):
     expected = ClassifyMemoryOpUseCase(store, lambda: Params.defaults(), clock).execute(vec(q))
     assert expected.action == "fallthrough" and expected.score > 0.0
     assert out.score == pytest.approx(expected.score)
+
+
+# ---- review fixes: unclear answers and expiry ----
+
+def test_unclear_answer_drops_the_question_and_flows_on(handler, store, clock, extractor):
+    extractor.resolution = OpResolution([], NewMemory(MemoryKind.FACT, "project", "acme", 0.4))
+    ask_medium(handler, store, clock)
+    before = len(store.list(Status.CURRENT, [MemoryKind.MEMORY_OP_EXAMPLE]))
+    out = say(handler, "what's the weather")
+    assert (out.spoken, out.consumed, out.pending_question, out.score) == ("", False, None, 0.0)
+    assert handler._pending is None
+    assert events(store, EventLabel.FALSE_OP) == []
+    assert store.list(Status.CURRENT, [MemoryKind.FACT]) == []
+    assert len(store.list(Status.CURRENT, [MemoryKind.MEMORY_OP_EXAMPLE])) == before
+    assert say(handler, "yes").consumed is False  # the question is gone, "yes" is just a turn
+
+
+def test_pending_question_expires_after_sixty_seconds(handler, store, clock, extractor):
+    m = put(store, clock, "we plan a diff reviewer")
+    extractor.resolution = OpResolution([m.id])
+    ask_medium(handler, store, clock)
+    clock.advance(61)
+    out = say(handler, FORGET_TEXT)  # classified normally, not taken as the answer
+    assert out.consumed and out.spoken.startswith("Forgotten:")
+    assert store.get(m.id).status == Status.FORGOTTEN
+    assert events(store, EventLabel.FALSE_OP) == []
+    assert examples(store, MEDIUM_TEXT) == []
+
+
+def test_pending_question_within_sixty_seconds_still_answers(handler, store, clock,
+                                                             extractor):
+    extractor.resolution = OpResolution([], NewMemory(MemoryKind.FACT, "project", "acme", 0.4))
+    ask_medium(handler, store, clock)
+    clock.advance(59)
+    assert say(handler, "yes").spoken == "Noted."
+
+
+def test_undo_not_offered_after_sixty_one_seconds(handler, store, clock, extractor):
+    m = put(store, clock, "we plan a diff reviewer")
+    extractor.resolution = OpResolution([m.id])
+    say(handler, FORGET_TEXT)
+    clock.advance(61)
+    out = say(handler, UNDO_TEXT)
+    assert out.consumed is False
+    assert store.get(m.id).status == Status.FORGOTTEN
+    assert events(store, EventLabel.FALSE_OP) == []
