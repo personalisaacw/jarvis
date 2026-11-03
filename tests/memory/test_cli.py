@@ -75,7 +75,7 @@ def test_cli_migrate_imports_routes_and_seeds(tmp_path, db, monkeypatch, capsys)
     monkeypatch.setitem(sys.modules, "adapters.embeddings", fake)
     (tmp_path / ".vectorstore").mkdir()
     (tmp_path / ".vectorstore" / "metadata.json").write_text(json.dumps(
-        [{"text": "play some jazz", "intent": "music", "timestamp": 5.0}]))
+        [{"text": "play some jazz", "intent": "quick", "timestamp": 5.0}]))
     assert main(["migrate", "--db", db, "--project-dir", str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert "1 route examples" in out

@@ -53,11 +53,11 @@ def record(service, text, mode="quick", op_fired=False):
 def test_first_start_seeds_ops_and_migrates(tmp_path, embedder, extractor, clock, store):
     (tmp_path / ".vectorstore").mkdir()
     (tmp_path / ".vectorstore" / "metadata.json").write_text(json.dumps(
-        [{"text": "play some jazz", "intent": "music", "timestamp": 5.0}]))
+        [{"text": "play some jazz", "intent": "quick", "timestamp": 5.0}]))
     build(tmp_path, embedder, extractor, clock, store)
     build(tmp_path, embedder, extractor, clock, store)  # second start is a no-op
     routes = store.list(None, [MemoryKind.ROUTE_EXAMPLE])
-    assert [(m.content, m.label) for m in routes] == [("play some jazz", "music")]
+    assert [(m.content, m.label) for m in routes] == [("play some jazz", "quick")]
     ops = store.list(Status.CURRENT, [MemoryKind.MEMORY_OP_EXAMPLE])
     assert len(ops) == sum(len(v) for v in SEEDS.values())
 
@@ -66,7 +66,7 @@ def test_no_embedder_skips_migration_seeding_and_capture(tmp_path, extractor, cl
                                                          capsys):
     (tmp_path / ".vectorstore").mkdir()
     (tmp_path / ".vectorstore" / "metadata.json").write_text(json.dumps(
-        [{"text": "play some jazz", "intent": "music", "timestamp": 5.0}]))
+        [{"text": "play some jazz", "intent": "quick", "timestamp": 5.0}]))
     service = MemoryService(None, str(tmp_path), extractor=extractor, clock=clock, store=store,
                             start_threads=False)
     assert store.list(None) == []
@@ -294,3 +294,37 @@ def test_repeated_quick_turn_is_less_salient_than_its_first_occurrence(service, 
     assert second.salience < first.salience
     assert second.salience == pytest.approx(
         Params.defaults().get("salience_length_bonus") / 40.0, abs=1e-5)
+
+
+def test_corrupt_db_is_moved_aside_and_service_starts_fresh(tmp_path, embedder, extractor,
+                                                             clock, capsys):
+    db = tmp_path / "memory.sqlite"
+    db.write_bytes(b"this is not a sqlite database " * 50)
+    service = MemoryService(embedder, str(tmp_path), str(db), extractor=extractor, clock=clock,
+                            start_threads=False)
+    try:
+        assert service.store.list(None, [MemoryKind.MEMORY_OP_EXAMPLE])  # seeded afresh
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("memory.sqlite.corrupt-")]
+        assert len(moved) == 1
+        assert moved[0].read_bytes().startswith(b"this is not a sqlite database")
+        assert moved[0].name == "memory.sqlite.corrupt-%d" % int(clock.now())
+        out = capsys.readouterr().out
+        assert ("[Memory] WARNING: memory database was unreadable; moved to %s and started "
+                "fresh" % moved[0]) in out
+    finally:
+        service.close()
+
+
+def test_startup_survives_migration_and_seed_failures(tmp_path, embedder, extractor, clock,
+                                                       store, monkeypatch, capsys):
+    import memory.service as svc
+
+    def boom(*a, **k):
+        raise RuntimeError("kaput")
+
+    monkeypatch.setattr(svc, "migrate_faiss", boom)
+    monkeypatch.setattr(svc, "seed_memory_ops", boom)
+    build(tmp_path, embedder, extractor, clock, store)
+    out = capsys.readouterr().out
+    assert "[Memory] WARNING: FAISS migration failed (kaput)" in out
+    assert "[Memory] WARNING: seeding memory-op examples failed (kaput)" in out

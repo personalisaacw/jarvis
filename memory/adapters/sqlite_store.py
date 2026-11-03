@@ -122,16 +122,36 @@ class SqliteMemoryStore(IMemoryStore, IVectorStore):
             parent = os.path.dirname(path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-        self._conn = sqlite3.connect(path, check_same_thread=False)
-        with self._lock:
-            if path != ":memory:":
-                self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.executescript(_SCHEMA)
-            self._conn.execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
-                (SCHEMA_VERSION,),
-            )
-            self._conn.commit()
+        try:
+            self._conn = self._open(path)
+        except sqlite3.DatabaseError:
+            if path == ":memory:":
+                raise
+            moved = "%s.corrupt-%d" % (path, int(self._clock.now()))
+            os.replace(path, moved)
+            for suffix in ("-wal", "-shm"):  # stale journals must not attach to the fresh file
+                if os.path.exists(path + suffix):
+                    os.replace(path + suffix, moved + suffix)
+            print("[Memory] WARNING: memory database was unreadable; moved to %s and started "
+                  "fresh" % moved)
+            self._conn = self._open(path)
+
+    def _open(self, path: str) -> sqlite3.Connection:
+        conn = sqlite3.connect(path, check_same_thread=False)
+        try:
+            with self._lock:
+                if path != ":memory:":
+                    conn.execute("PRAGMA journal_mode=WAL")
+                conn.executescript(_SCHEMA)
+                conn.execute(
+                    "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
+                    (SCHEMA_VERSION,),
+                )
+                conn.commit()
+        except sqlite3.DatabaseError:
+            conn.close()
+            raise
+        return conn
 
     def close(self) -> None:
         with self._lock:
@@ -151,6 +171,24 @@ class SqliteMemoryStore(IMemoryStore, IVectorStore):
             )
             self._conn.commit()
             self._cache = None
+
+    def add_many(self, memories: List[Memory]) -> None:
+        """Insert all memories in one transaction: either every row lands or none does."""
+        with self._lock:
+            try:
+                with self._conn:
+                    for m in memories:
+                        self._conn.execute(
+                            "INSERT INTO memories (%s) VALUES (%s)"
+                            % (_MEMORY_COLS, ",".join("?" * 15)),
+                            _memory_to_row(m),
+                        )
+                        self._conn.execute(
+                            "INSERT INTO accesses(memory_id, at, kind) VALUES (?, ?, ?)",
+                            (m.id, m.created_at, AccessKind.CREATED.value),
+                        )
+            finally:
+                self._cache = None
 
     def get(self, id: str) -> Optional[Memory]:
         with self._lock:

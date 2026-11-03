@@ -89,9 +89,16 @@ class MemoryService:
         )
 
         if embedder is not None:
-            migrate_faiss(self.store, embedder,
-                          os.path.join(project_dir, ".vectorstore", "metadata.json"))
-            seed_memory_ops(self.store, embedder, clock)
+            try:
+                migrate_faiss(self.store, embedder,
+                              os.path.join(project_dir, ".vectorstore", "metadata.json"))
+            except Exception as e:
+                print("[Memory] WARNING: FAISS migration failed (%s); leaving .vectorstore "
+                      "untouched" % e)
+            try:
+                seed_memory_ops(self.store, embedder, clock)
+            except Exception as e:
+                print("[Memory] WARNING: seeding memory-op examples failed (%s)" % e)
         if start_threads:
             self._spawn(self._tick_loop)
             if self.sleep.is_due():
