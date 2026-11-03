@@ -144,15 +144,16 @@ def test_peer_memory_lifecycle(service, store, extractor, clock):
     rr = service.recall_for_prompt(service.embed(SQLITE), "think")
     assert [m.content for m in rr.memories] == [SQLITE]
 
-    # 6. Debounced idle flush (spec 7.1): quick turns that only restate what is already known
-    #    (max_cosine 1.0 against the current decision) stay below the salience threshold and
-    #    are held until extract_idle_seconds pass; a batch that yields nothing is logged as
-    #    EMPTY_EXTRACTION (cadence too eager). Novelty is measured against stored memories,
-    #    not earlier turns, so three FakeEmbedder "ok"s (random vectors) would each score ~0.5
-    #    and cross the 1.5 threshold on the third turn.
+    # 6. Debounced idle flush (spec 7.1): trivial quick turns repeating each other ("ok" x3)
+    #    stay below the salience threshold because novelty is measured against stored
+    #    memories and the session's recent turns, so they are held until
+    #    extract_idle_seconds pass; a batch that yields nothing is logged as
+    #    EMPTY_EXTRACTION (cadence too eager).
     extractor.responses = [Extraction()]
     for _ in range(3):
-        service.record_turn(SQLITE, "...", "quick", service.embed(SQLITE), None, False)
+        service.record_turn("ok", "ok", "quick", service.embed("ok"), None, False)
+    service.buffer.tick()
+    assert flushes == ["salience"]
     assert service.buffer.total < store.load_params().get("extract_salience_threshold")
     assert len(store.pending_turns()) == 3
     assert len(_extract_calls(extractor)) == 1

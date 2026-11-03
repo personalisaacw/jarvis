@@ -282,3 +282,15 @@ def test_reset_params_restores_defaults_with_history(service, store):
     (row,) = store.params_history(10)
     assert (row["name"], row["old_value"], row["new_value"], row["reason"]) == (
         "recall_k", 8, 6, "manual reset")
+
+
+# ---- review fixes ----
+
+def test_repeated_quick_turn_is_less_salient_than_its_first_occurrence(service, store):
+    v = service.embed("ok")
+    service.record_turn("ok", "ok", "quick", v, None, False)
+    service.record_turn("ok", "ok", "quick", v, None, False)
+    first, second = store.recent_turns(service.session_id, 10)
+    assert second.salience < first.salience
+    assert second.salience == pytest.approx(
+        Params.defaults().get("salience_length_bonus") / 40.0, abs=1e-5)

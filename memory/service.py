@@ -15,6 +15,7 @@ from memory.adapters.prompt_renderer import render_code_prefix, render_system_pr
 from memory.adapters.sqlite_store import SqliteMemoryStore
 from memory.domain.entities import EventLabel, MemoryEvent, MemoryKind, Tier, Turn, project_scope
 from memory.domain.params import FIXED, PARAM_SPECS, Params
+from memory.domain.scoring import cosine
 from memory.ports.clock import IClock, SystemClock
 from memory.ports.extractor import IMemoryExtractor
 from memory.use_cases.capture import CaptureBatchUseCase
@@ -131,7 +132,7 @@ class MemoryService:
         if self._pending_score is not None:
             self._scores[turn.id] = self._pending_score
             self._pending_score = None
-        max_cos = self.store.max_cosine(vec, kinds=_RECALLABLE_KINDS)
+        max_cos = self._novelty_max_cosine(vec)
         with self._buffer_lock:
             self.buffer.add_turn(turn, max_cos, op_fired)
 
@@ -204,6 +205,13 @@ class MemoryService:
         return Turn(id=str(uuid.uuid4()), session_id=self.session_id, at=self.clock.now(),
                     project_scope=scope, mode=mode, user_text=user_text,
                     assistant_text=assistant_text, embedding=vec, recalled_ids=recalled_ids)
+
+    def _novelty_max_cosine(self, vec: np.ndarray) -> float:
+        """max cosine over current memories and the session's recent turns (spec 6 salience)."""
+        best = self.store.max_cosine(vec, kinds=_RECALLABLE_KINDS)
+        for t in self._working_turns():
+            best = max(best, cosine(vec, t.embedding))
+        return best
 
     def _working_turns(self) -> List[Turn]:
         return self.store.recent_turns(self.session_id, int(self._params.get("working_turns")))
