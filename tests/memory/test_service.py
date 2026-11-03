@@ -358,3 +358,27 @@ def test_op_fired_mark_survives_a_failed_extraction_for_the_retry(service, store
     assert len(store.pending_turns()) == 1 and len(service._op_fired_turns) == 1
     service.buffer.flush("idle")
     assert store.pending_turns() == [] and service._op_fired_turns == set()
+
+
+def test_default_db_lives_under_the_project_dir(tmp_path, embedder, extractor, clock):
+    service = MemoryService(embedder, str(tmp_path), extractor=extractor, clock=clock,
+                            start_threads=False)
+    try:
+        assert (tmp_path / ".jarvis" / "memory.sqlite").is_file()
+    finally:
+        service.close()
+
+
+def test_tick_runs_sleep_when_due_and_not_already_sleeping(service, store, clock):
+    service._spawn = lambda target, *args: target(*args)  # run "threads" inline
+    store.set_meta("last_sleep_at", str(clock.now()))
+    service._tick()
+    assert store.get_meta("last_sleep_at") == str(clock.now())  # not due: nothing ran
+    clock.advance(25 * 3600)
+    service._sleeping = True
+    service._tick()
+    assert float(store.get_meta("last_sleep_at")) < clock.now()  # a pass is in flight
+    service._sleeping = False
+    service._tick()
+    assert float(store.get_meta("last_sleep_at")) == clock.now()
+    assert service._sleeping is False

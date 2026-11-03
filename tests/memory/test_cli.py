@@ -94,3 +94,8 @@ def test_cli_error_returns_one_with_message(tmp_path, capsys):
     assert main(["report", "--db", str(bad / "m.sqlite")]) == 1
     out = capsys.readouterr().out.strip().splitlines()
     assert len(out) == 1 and out[0].startswith("error:")
+
+
+def test_cli_default_db_is_under_project_dir(tmp_path, capsys):
+    assert main(["report", "--project-dir", str(tmp_path)]) == 0
+    assert (tmp_path / ".jarvis" / "memory.sqlite").is_file()

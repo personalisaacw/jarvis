@@ -32,6 +32,18 @@ _DAY = 86400.0
 _TICK_SECONDS = 5.0
 
 
+class _LockedFlush:
+    """The buffer as the sleep thread sees it: flushes under the service's buffer lock."""
+
+    def __init__(self, buffer: ExtractionBuffer, lock):
+        self._buffer = buffer
+        self._lock = lock
+
+    def flush(self, reason: str) -> None:
+        with self._lock:
+            self._buffer.flush(reason)
+
+
 def _fmt_time(t: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
 
@@ -48,7 +60,7 @@ class MemoryService:
         self,
         embedder: Optional[IEmbeddingEngine],
         project_dir: str,
-        db_path: str = ".jarvis/memory.sqlite",
+        db_path: Optional[str] = None,
         extractor: Optional[IMemoryExtractor] = None,
         clock: IClock = SystemClock(),
         store: Optional[SqliteMemoryStore] = None,
@@ -58,6 +70,8 @@ class MemoryService:
         self.clock = clock
         self.project_scope = project_scope(project_dir)
         self.session_id = str(uuid.uuid4())
+        if db_path is None:
+            db_path = os.path.join(project_dir, ".jarvis", "memory.sqlite")
         self.store = store if store is not None else SqliteMemoryStore(db_path, clock)
         self.extractor = extractor if extractor is not None else build_extractor()
         self._threaded = start_threads
@@ -68,6 +82,7 @@ class MemoryService:
         self._capture_lock = threading.Lock()
         self._buffer_lock = threading.RLock()
         self._stop = threading.Event()
+        self._sleeping = False
 
         params: Callable[[], Params] = lambda: self._params
         self.recall = RecallUseCase(self.store, params, clock, self.session_id)
@@ -85,7 +100,8 @@ class MemoryService:
         )
         self.tuner = TuneParamsUseCase(self.store, clock)
         self.sleep = SleepUseCase(
-            self.store, self.extractor, self.buffer, self.tuner, params, clock,
+            self.store, self.extractor, _LockedFlush(self.buffer, self._buffer_lock),
+            self.tuner, params, clock,
             on_done=self._after_sleep, embedder=embedder,
             tuner_for_store=lambda s: TuneParamsUseCase(s, clock),
         )
@@ -103,8 +119,7 @@ class MemoryService:
                 print("[Memory] WARNING: seeding memory-op examples failed (%s)" % e)
         if start_threads:
             self._spawn(self._tick_loop)
-            if self.sleep.is_due():
-                self._spawn(self._run_sleep)
+            self._maybe_sleep()
 
     # ---- hot path ----
 
@@ -264,17 +279,36 @@ class MemoryService:
 
     def _tick_loop(self) -> None:
         while not self._stop.wait(_TICK_SECONDS):
-            try:
-                with self._buffer_lock:
-                    self.buffer.tick()
-            except Exception as e:
-                print("[Memory] idle tick failed: %s" % e)
+            self._tick()
+
+    def _tick(self) -> None:
+        try:
+            with self._buffer_lock:
+                self.buffer.tick()
+        except Exception as e:
+            print("[Memory] idle tick failed: %s" % e)
+        self._maybe_sleep()
+
+    def _maybe_sleep(self) -> None:
+        """Start a sleep pass in a daemon thread when one is due and none is running."""
+        if self._sleeping:
+            return
+        try:
+            due = self.sleep.is_due()
+        except Exception as e:
+            print("[Memory] sleep check failed: %s" % e)
+            return
+        if due:
+            self._sleeping = True
+            self._spawn(self._run_sleep)
 
     def _run_sleep(self) -> None:
         try:
             self.sleep.run()
         except Exception as e:
             print("[Memory] sleep failed: %s" % e)
+        finally:
+            self._sleeping = False
 
     # ---- private: report helpers ----
 

@@ -6,12 +6,13 @@ from memory.adapters.memory_op_seeds import seed_memory_ops
 from memory.adapters.migrate_faiss import migrate_faiss
 from memory.service import MemoryService
 
-DEFAULT_DB = ".jarvis/memory.sqlite"
+DEFAULT_DB = None  # MemoryService puts it at <project-dir>/.jarvis/memory.sqlite
 
 
 def _parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--db", default=DEFAULT_DB, help="memory database path")
+    common.add_argument("--db", default=DEFAULT_DB,
+                        help="memory database path (default <project-dir>/.jarvis/memory.sqlite)")
     common.add_argument("--project-dir", default=os.getcwd(), help="project directory")
     parser = argparse.ArgumentParser(prog="python -m memory")
     sub = parser.add_subparsers(dest="command", required=True)
