@@ -68,7 +68,7 @@ async def reject_changes():
 @app.post("/api/feedback")
 async def receive_feedback(request: Request):
     """Receives correct intent from the UI and adds it to the FAISS index."""
-    from adapters.vector_store import FaissAdapter
+    from memory.adapters.sqlite_store import SqliteMemoryStore
     from adapters.embeddings import HuggingFaceAdapter
     from use_cases.routing import LearnFromFeedbackUseCase
     
@@ -77,7 +77,7 @@ async def receive_feedback(request: Request):
     intent = data.get("intent")
     
     if text and intent:
-        vector_store = FaissAdapter()
+        vector_store = SqliteMemoryStore()
         embedding_engine = HuggingFaceAdapter()
         feedback_uc = LearnFromFeedbackUseCase(vector_store, embedding_engine)
         feedback_uc.execute(text, intent)
