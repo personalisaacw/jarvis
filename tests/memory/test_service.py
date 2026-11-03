@@ -328,3 +328,33 @@ def test_startup_survives_migration_and_seed_failures(tmp_path, embedder, extrac
     out = capsys.readouterr().out
     assert "[Memory] WARNING: FAISS migration failed (kaput)" in out
     assert "[Memory] WARNING: seeding memory-op examples failed (kaput)" in out
+
+
+def test_explicit_op_on_a_turn_where_net1_fired_is_not_a_missed_op(tmp_path, embedder, clock,
+                                                                   store):
+    class ExplicitStoreExtractor(FakeExtractor):
+        def extract(self, turns, recalled):
+            return Extraction(explicit_ops=[ExplicitOp(t.id, MemoryOp.STORE) for t in turns])
+
+    service = build(tmp_path, embedder, ExplicitStoreExtractor(), clock, store)
+    protos_before = len(store.list(Status.CURRENT, [MemoryKind.MEMORY_OP_EXAMPLE]))
+    fired, missed = "remember that I prefer tabs", "hang on to the staging url"
+    service.record_turn(fired, "Noted.", "think", service.embed(fired), None, op_fired=True)
+    service.record_turn(missed, "ok", "think", service.embed(missed), None, op_fired=False)
+    service.buffer.flush("idle")
+    (missed_op,) = [e for e in store.events_since(0) if e.label == EventLabel.MISSED_OP]
+    [missed_turn] = [t for t in store.recent_turns(service.session_id, 10)
+                     if t.user_text == missed]
+    assert missed_op.turn_id == missed_turn.id
+    protos = store.list(Status.CURRENT, [MemoryKind.MEMORY_OP_EXAMPLE])
+    assert len(protos) == protos_before + 1 and fired not in [m.content for m in protos]
+    assert service._op_fired_turns == set()  # pruned after the batch
+
+
+def test_op_fired_mark_survives_a_failed_extraction_for_the_retry(service, store, extractor):
+    text = "remember that I prefer tabs"
+    extractor.raise_next = 1  # the op turn's salience flushes it at once; that call fails
+    service.record_turn(text, "Noted.", "quick", service.embed(text), None, op_fired=True)
+    assert len(store.pending_turns()) == 1 and len(service._op_fired_turns) == 1
+    service.buffer.flush("idle")
+    assert store.pending_turns() == [] and service._op_fired_turns == set()

@@ -44,6 +44,7 @@ class CaptureBatchUseCase:
         on_profile_change: Optional[Callable[[], None]] = None,
         classifier_score_for: Optional[Callable[[str], Optional[float]]] = None,
         id_factory: Callable[[], str] = _new_id,
+        op_fired_for: Callable[[str], bool] = lambda _: False,
     ):
         self._store = store
         self._extractor = extractor
@@ -53,6 +54,7 @@ class CaptureBatchUseCase:
         self._on_profile_change = on_profile_change
         self._classifier_score_for = classifier_score_for or (lambda turn_id: None)
         self._new_id = id_factory
+        self._op_fired_for = op_fired_for
 
     # ---- entry point ----
 
@@ -95,7 +97,8 @@ class CaptureBatchUseCase:
         for mid in extraction.forget:
             touched = self._apply_forget(mid, turns, project_scope) or touched
         for op in extraction.explicit_ops:
-            self._apply_missed_op(op, turns)
+            if not self._op_fired_for(op.turn_id):  # Net 1 handled it: nothing was missed
+                self._apply_missed_op(op, turns)
         if extraction.is_empty():
             self._log(EventLabel.EMPTY_EXTRACTION, None, turns[-1].id,
                       {"buffer_salience": buffer_salience})

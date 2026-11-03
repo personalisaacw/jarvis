@@ -299,3 +299,11 @@ def test_dedup_miss_decided_at_precedes_its_own_access(store, embedder, clock):
     (miss,) = events(store, EventLabel.MISS)
     reinforced = [a for a in store.get("m1").accesses if a.kind == AccessKind.REINFORCED]
     assert miss.context["decided_at"] == clock.now() == reinforced[0].at
+
+
+def test_explicit_ops_skip_turns_where_net1_fired(store, embedder, clock):
+    t = turn(clock, text="please remember my cat is called Tom")
+    ex = Extraction(explicit_ops=[ExplicitOp("t1", MemoryOp.STORE)])
+    run(store, embedder, clock, ex, [t], op_fired_for=lambda tid: tid == "t1")
+    assert events(store, EventLabel.MISSED_OP) == []
+    assert store.list(Status.CURRENT, [MemoryKind.MEMORY_OP_EXAMPLE]) == []

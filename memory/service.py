@@ -3,7 +3,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 import numpy as np
 
@@ -64,6 +64,7 @@ class MemoryService:
         self._params = self.store.load_params()
         self._pending_score = None  # type: Optional[float]
         self._scores: Dict[str, float] = {}
+        self._op_fired_turns: Set[str] = set()
         self._capture_lock = threading.Lock()
         self._buffer_lock = threading.RLock()
         self._stop = threading.Event()
@@ -74,6 +75,7 @@ class MemoryService:
             self.store, self.extractor, embedder, params, clock,
             on_profile_change=self.recall.invalidate_profile,
             classifier_score_for=lambda turn_id: self._scores.pop(turn_id, None),
+            op_fired_for=lambda turn_id: turn_id in self._op_fired_turns,
         )
         self.buffer = ExtractionBuffer(self.store, params, clock, self._on_flush)
         self.handler = HandleMemoryOpUseCase(
@@ -141,6 +143,8 @@ class MemoryService:
         if self._pending_score is not None:
             self._scores[turn.id] = self._pending_score
             self._pending_score = None
+        if op_fired:
+            self._op_fired_turns.add(turn.id)
         max_cos = self._novelty_max_cosine(vec)
         with self._buffer_lock:
             self.buffer.add_turn(turn, max_cos, op_fired)
@@ -239,8 +243,11 @@ class MemoryService:
     def _capture(self, turns: List[Turn]) -> None:
         try:
             self.capture.execute(turns, self.project_scope, sum(t.salience for t in turns))
+            still_pending = {t.id for t in self.store.pending_turns()}  # failed: retried later
             for t in turns:  # scores not claimed by a missed_op are no longer needed
                 self._scores.pop(t.id, None)
+                if t.id not in still_pending:
+                    self._op_fired_turns.discard(t.id)
             self.store.delete_turns_before(self.clock.now() - _DAY, self.session_id,
                                            int(self._params.get("working_turns")))
         except Exception as e:
