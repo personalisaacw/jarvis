@@ -5,6 +5,7 @@ from memory.adapters.llm_json import JsonLLMExtractor
 
 GROQ_DEFAULT_MODEL = "qwen/qwen3.8-27b"  # mirrors the default in agent_adapter/parsers/groq_parser.py
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+TIMEOUT_SECONDS = 15  # a stalled call must not hold the capture lock / a waiting user
 
 
 class GroqMemoryExtractor(JsonLLMExtractor):
@@ -18,7 +19,8 @@ class GroqMemoryExtractor(JsonLLMExtractor):
             except ImportError:
                 OpenAI = None
             if OpenAI is not None:
-                self.client = OpenAI(base_url=GROQ_BASE_URL, api_key=self.api_key)
+                self.client = OpenAI(base_url=GROQ_BASE_URL, api_key=self.api_key,
+                                     timeout=TIMEOUT_SECONDS, max_retries=0)
 
     def is_available(self) -> bool:
         return bool(self.api_key and self.client)

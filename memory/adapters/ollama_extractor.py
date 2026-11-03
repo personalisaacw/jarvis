@@ -1,5 +1,7 @@
 from memory.adapters.llm_json import JsonLLMExtractor
 
+TIMEOUT_SECONDS = 15  # a stalled local model must not hold the capture lock / a waiting user
+
 
 class OllamaMemoryExtractor(JsonLLMExtractor):
     def __init__(self, model: str = "llama3.2:3b", chat_fn=None):
@@ -9,7 +11,7 @@ class OllamaMemoryExtractor(JsonLLMExtractor):
             try:
                 import ollama
 
-                self.chat_fn = ollama.chat
+                self.chat_fn = ollama.Client(timeout=TIMEOUT_SECONDS).chat
             except ImportError:
                 self.chat_fn = None
 

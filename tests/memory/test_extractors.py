@@ -10,7 +10,7 @@ from memory.adapters.extractor_prompts import (
     render_resolve_user,
     render_summarise_user,
 )
-from memory.adapters.groq_extractor import GroqMemoryExtractor
+from memory.adapters.groq_extractor import GROQ_BASE_URL, GroqMemoryExtractor
 from memory.adapters.llm_json import parse_json_object
 from memory.adapters.ollama_extractor import OllamaMemoryExtractor
 from memory.domain.entities import (
@@ -204,3 +204,46 @@ def test_fake_extractor_contract():
         fx.extract([], [])
     assert fx.extract([], []) is first
     assert [c[0] for c in fx.calls] == ["extract", "extract", "resolve_op", "summarise", "extract", "extract"]
+
+
+# ---- review fixes ----
+
+def test_extract_prompt_caps_long_turn_texts_at_400_chars():
+    t = Turn(id="t1", session_id="s", at=1.0, project_scope="project:/p", mode="think",
+             user_text="u" * 400, assistant_text="a" * 2000, embedding=vec("t1"))
+    user = render_extract_user([t], [])
+    assert "user: " + "u" * 400 + "\n" in user  # exactly 400: not cut
+    assert "assistant: " + "a" * 399 + "\u2026\n" in user
+    assert "a" * 400 not in user
+
+
+def test_groq_client_built_with_timeout_and_no_retries(monkeypatch):
+    built = []
+
+    def fake_openai(**kw):
+        built.append(kw)
+        return _FakeOpenAI("{}")
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=fake_openai))
+    assert GroqMemoryExtractor(api_key="k").is_available() is True
+    assert built == [{"base_url": GROQ_BASE_URL, "api_key": "k", "timeout": 15,
+                      "max_retries": 0}]
+
+
+def test_ollama_uses_a_client_with_timeout(monkeypatch):
+    built, calls = [], []
+
+    class FakeClient:
+        def __init__(self, **kw):
+            built.append(kw)
+
+        def chat(self, **kw):
+            calls.append(kw)
+            return {"message": {"content": '{"new": []}'}}
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(Client=FakeClient))
+    ex = OllamaMemoryExtractor()
+    assert ex.is_available() is True
+    ex.extract([_turn("hi")], [])
+    assert built == [{"timeout": 15}]
+    assert calls and calls[0]["format"] == "json"
