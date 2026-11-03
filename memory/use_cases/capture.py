@@ -138,9 +138,6 @@ class CaptureBatchUseCase:
             self._store.add_access(
                 existing.id, now, AccessKind.EXPLICIT if explicit else AccessKind.REINFORCED
             )
-            if explicit and existing.importance < 1.0:
-                existing.importance = 1.0
-                self._store.update(existing)
             if existing.tier != Tier.ACTIVE:
                 context = {
                     "tier_at_time": existing.tier.value, "similarity": sim, "rank_at_time": 0,
@@ -150,10 +147,21 @@ class CaptureBatchUseCase:
                 if mode is not None:
                     context["mode"] = mode
                 self._log(EventLabel.MISS, existing.id, turn_id, context)
-            return existing, False
+            if not explicit:
+                return existing, False
+            return self._pin(existing.id), existing.kind in _PROFILE_KINDS
         importance = 1.0 if explicit else min(1.0, max(0.0, float(nm.importance)))
         memory = self._insert(nm.kind, scope, nm.content, vector, importance, None, explicit)
         return memory, memory.kind in _PROFILE_KINDS
+
+    def _pin(self, memory_id: str) -> Memory:
+        """An explicit hit: importance 1.0 and the tier that now implies (with the new access)."""
+        m = self._store.get(memory_id)
+        p = self._params()
+        m.importance = 1.0
+        m.tier = tier_for(strength(m, self._clock.now(), p), p)
+        self._store.update(m)
+        return m
 
     def _insert(
         self, kind: MemoryKind, scope: str, content: str, vector: np.ndarray,

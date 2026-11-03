@@ -249,8 +249,8 @@ class HandleMemoryOpUseCase:
     def _run_store(self, res, rec: _Executed) -> Tuple[str, bool]:
         if res.new is None:
             return _UNRESOLVED, False
-        m, created = self._apply_new(res.new, rec)
-        if not created and m.tier != Tier.ACTIVE:  # capture logged a dedup miss
+        m, created, tier_before = self._apply_new(res.new, rec)
+        if not created and tier_before != Tier.ACTIVE:  # capture logged a dedup miss
             rec.events += self._log_late_extraction(rec.vec)
         return "Noted.", True
 
@@ -270,7 +270,7 @@ class HandleMemoryOpUseCase:
             return _UNRESOLVED, False
         old = targets[0]
         recalled = self._recall.last_recalled_ids()
-        new, created = self._apply_new(res.new, rec)
+        new, created, _ = self._apply_new(res.new, rec)
         if new.id == old.id:
             return "I already have that.", False
         if created or new.supersedes_id is None:
@@ -361,15 +361,19 @@ class HandleMemoryOpUseCase:
                 "similarity": cosine(m.embedding, vec), "scope": m.scope,
                 "query_scope": self._scope(), "mode": _ASK_MODE}
 
-    def _apply_new(self, nm, rec: _Executed) -> Tuple[Memory, bool]:
-        """capture.apply_new, telling a fresh insert apart from a dedup hit."""
-        before = {m.id for m in self._store.list(Status.CURRENT, _RECALLABLE_KINDS)}
+    def _apply_new(self, nm, rec: _Executed) -> Tuple[Memory, bool, Optional[Tier]]:
+        """capture.apply_new, telling a fresh insert apart from a dedup hit.
+
+        Returns (memory, created, tier before the call); an explicit dedup hit re-tiers the
+        memory, so the old tier is what says whether capture logged a miss.
+        """
+        before = {m.id: m.tier for m in self._store.list(Status.CURRENT, _RECALLABLE_KINDS)}
         m = self._capture.apply_new(nm, self._scope(), explicit=True, turn_id=None,
                                     mode=_ASK_MODE)
         created = m.id not in before
         if created:
             rec.created.append(m.id)
-        return m, created
+        return m, created, before.get(m.id)
 
     def _log_late_extraction(self, vec: np.ndarray) -> List[str]:
         pending = self._store.pending_turns()

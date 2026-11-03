@@ -307,3 +307,28 @@ def test_explicit_ops_skip_turns_where_net1_fired(store, embedder, clock):
     run(store, embedder, clock, ex, [t], op_fired_for=lambda tid: tid == "t1")
     assert events(store, EventLabel.MISSED_OP) == []
     assert store.list(Status.CURRENT, [MemoryKind.MEMORY_OP_EXAMPLE]) == []
+
+
+def test_explicit_dedup_onto_archived_preference_reactivates_and_refreshes_profile(
+    store, embedder, clock
+):
+    put(store, clock, "p1", "likes tabs", kind=MemoryKind.PREFERENCE, scope=GLOBAL_SCOPE,
+        tier=Tier.ARCHIVED, importance=0.1)
+    clock.advance(400 * 86400)
+    calls = []
+    uc, _ = make_capture(store, embedder, clock, on_profile_change=lambda: calls.append(1))
+    m = uc.apply_new(NewMemory(MemoryKind.PREFERENCE, "global", "likes tabs", 0.3), SCOPE,
+                     True, None)
+    stored = store.get("p1")
+    assert m.id == "p1" and stored.importance == 1.0 and stored.tier == Tier.ACTIVE
+    assert calls == [1]
+    (miss,) = events(store, EventLabel.MISS)
+    assert miss.context["tier_at_time"] == "archived"  # logged as it was found
+
+
+def test_explicit_dedup_onto_fact_does_not_refresh_profile(store, embedder, clock):
+    put(store, clock, "f1", "my cat is Tom", tier=Tier.DORMANT, importance=0.1)
+    calls = []
+    uc, _ = make_capture(store, embedder, clock, on_profile_change=lambda: calls.append(1))
+    uc.apply_new(NewMemory(MemoryKind.FACT, "project", "my cat is Tom", 0.3), SCOPE, True, None)
+    assert store.get("f1").tier == Tier.ACTIVE and calls == []

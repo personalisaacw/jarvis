@@ -495,3 +495,17 @@ def test_undo_not_offered_after_sixty_one_seconds(handler, store, clock, extract
     assert out.consumed is False
     assert store.get(m.id).status == Status.FORGOTTEN
     assert events(store, EventLabel.FALSE_OP) == []
+
+
+def test_store_dedup_onto_dormant_logs_late_extraction_and_reactivates(handler, store, clock,
+                                                                      extractor):
+    existing = put(store, clock, "the demo is on friday", tier=Tier.DORMANT)
+    store.add_turn(Turn(id="t1", session_id="s", at=clock.now(), project_scope=SCOPE,
+                        mode="think", user_text="demo friday", assistant_text="ok",
+                        embedding=vec(STORE_TEXT), salience=0.9))
+    extractor.resolution = OpResolution([], NewMemory(MemoryKind.FACT, "project",
+                                                      "the demo is on friday", 0.3))
+    assert say(handler, STORE_TEXT).spoken == "Noted."
+    assert store.get(existing.id).tier == Tier.ACTIVE
+    assert len(events(store, EventLabel.MISS)) == 1
+    assert len(events(store, EventLabel.LATE_EXTRACTION)) == 1
