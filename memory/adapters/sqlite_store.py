@@ -113,9 +113,18 @@ def _in_clause(values: Iterable[Any]) -> Tuple[str, list]:
     return "(" + ",".join("?" * len(vals)) + ")", vals
 
 
+def _is_corruption(e: sqlite3.DatabaseError) -> bool:
+    if not isinstance(e, sqlite3.OperationalError):
+        return True
+    msg = str(e).lower()
+    return "malformed" in msg or "not a database" in msg
+
+
 class SqliteMemoryStore(IMemoryStore, IVectorStore):
-    def __init__(self, path: str = ".jarvis/memory.sqlite", clock: IClock = SystemClock()):
+    def __init__(self, path: str = ".jarvis/memory.sqlite", clock: IClock = SystemClock(),
+                 busy_timeout: float = 5.0):
         self._clock = clock
+        self._busy_timeout = busy_timeout
         self._lock = threading.RLock()
         self._cache: Optional[Tuple[List[str], np.ndarray]] = None
         if path != ":memory:":
@@ -124,10 +133,12 @@ class SqliteMemoryStore(IMemoryStore, IVectorStore):
                 os.makedirs(parent, exist_ok=True)
         try:
             self._conn = self._open(path)
-        except sqlite3.DatabaseError:
-            if path == ":memory:":
+        except sqlite3.DatabaseError as e:
+            # Only genuine corruption may move the file; a locked database or an unopenable
+            # path is a healthy file we must leave alone, so it propagates.
+            if path == ":memory:" or not _is_corruption(e):
                 raise
-            moved = "%s.corrupt-%d" % (path, int(self._clock.now()))
+            moved = self._unique_corrupt_name(path)
             os.replace(path, moved)
             for suffix in ("-wal", "-shm"):  # stale journals must not attach to the fresh file
                 if os.path.exists(path + suffix):
@@ -136,8 +147,16 @@ class SqliteMemoryStore(IMemoryStore, IVectorStore):
                   "fresh" % moved)
             self._conn = self._open(path)
 
+    def _unique_corrupt_name(self, path: str) -> str:
+        base = "%s.corrupt-%d" % (path, int(self._clock.now()))
+        candidate, n = base, 0
+        while any(os.path.lexists(candidate + sfx) for sfx in ("", "-wal", "-shm")):
+            n += 1
+            candidate = "%s-%d" % (base, n)
+        return candidate
+
     def _open(self, path: str) -> sqlite3.Connection:
-        conn = sqlite3.connect(path, check_same_thread=False)
+        conn = sqlite3.connect(path, timeout=self._busy_timeout, check_same_thread=False)
         try:
             with self._lock:
                 if path != ":memory:":

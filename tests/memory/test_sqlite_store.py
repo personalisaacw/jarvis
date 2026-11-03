@@ -289,3 +289,84 @@ def test_concurrent_writer_thread(store, embedder):
     assert errors == []
     assert len(store.list()) == 200
 
+
+
+def _healthy_db(path, clock, embedder):
+    s = SqliteMemoryStore(path, clock)
+    s.add(_m("keep me", embedder))
+    s.close()
+
+
+def _corrupt_siblings(path):
+    import glob
+    return sorted(glob.glob(path + ".corrupt-*"))
+
+
+def test_locked_db_is_not_renamed(tmp_path, clock, embedder):
+    import os
+    import sqlite3
+    path = str(tmp_path / "memory.sqlite")
+    _healthy_db(path, clock, embedder)
+    other = sqlite3.connect(path, timeout=0, isolation_level=None)
+    try:
+        other.execute("BEGIN EXCLUSIVE")
+        with pytest.raises(sqlite3.OperationalError):
+            SqliteMemoryStore(path, clock, busy_timeout=0.1)
+        assert os.path.exists(path)
+        assert _corrupt_siblings(path) == []
+    finally:
+        other.execute("ROLLBACK")
+        other.close()
+    s = SqliteMemoryStore(path, clock)
+    assert len(s.list()) == 1
+    s.close()
+
+
+def test_corrupt_db_is_renamed_and_fresh_store_opens(tmp_path, clock, capsys):
+    import os
+    path = str(tmp_path / "memory.sqlite")
+    with open(path, "wb") as f:
+        f.write(b"not a database" * 100)
+    s = SqliteMemoryStore(path, clock)
+    assert s.list() == []
+    s.close()
+    moved = _corrupt_siblings(path)
+    assert len(moved) == 1 and os.path.exists(path)
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_corrupt_rename_never_overwrites_existing(tmp_path, clock):
+    path = str(tmp_path / "memory.sqlite")
+    earlier = "%s.corrupt-%d" % (path, int(clock.now()))
+    with open(earlier, "wb") as f:
+        f.write(b"earlier evidence")
+    with open(path, "wb") as f:
+        f.write(b"not a database" * 100)
+    s = SqliteMemoryStore(path, clock)
+    s.close()
+    with open(earlier, "rb") as f:
+        assert f.read() == b"earlier evidence"
+    assert _corrupt_siblings(path) == [earlier, earlier + "-1"]
+    with open(earlier + "-1", "rb") as f:
+        assert f.read() == b"not a database" * 100
+
+
+def test_unopenable_path_propagates(tmp_path, clock):
+    import os
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"i am a file")
+    with pytest.raises(OSError):
+        SqliteMemoryStore(str(blocker / "sub" / "memory.sqlite"), clock)
+    assert blocker.read_bytes() == b"i am a file"
+    assert os.listdir(str(tmp_path)) == ["blocker"]
+
+
+def test_directory_as_db_path_propagates_untouched(tmp_path, clock):
+    import os
+    import sqlite3
+    d = tmp_path / "memory.sqlite"
+    d.mkdir()
+    with pytest.raises(sqlite3.DatabaseError):
+        SqliteMemoryStore(str(d), clock)
+    assert os.path.isdir(str(d))
+    assert _corrupt_siblings(str(d)) == []

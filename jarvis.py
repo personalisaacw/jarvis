@@ -82,7 +82,14 @@ from memory.service import MemoryService
 print("Loading New Router Architecture...")
 project_dir = os.path.dirname(os.path.abspath(__file__))
 embedding_engine = HuggingFaceAdapter()
-memory_service = MemoryService(embedding_engine, project_dir)
+try:
+    memory_service = MemoryService(embedding_engine, project_dir)
+except Exception as _mem_err:
+    # A locked or unopenable memory DB must not abort start-up (and is never renamed).
+    # The router still needs a vector store, so fall back to a session-only in-memory one.
+    from memory.adapters.sqlite_store import SqliteMemoryStore
+    print("[Memory] WARNING: memory disabled for this session: %s" % _mem_err)
+    memory_service = MemoryService(embedding_engine, project_dir, store=SqliteMemoryStore(":memory:"))
 vector_store = memory_service.store
 route_use_case = RouteCommandUseCase(vector_store, embedding_engine, fallback_threshold=0.30)
 feedback_use_case = LearnFromFeedbackUseCase(vector_store, embedding_engine)
