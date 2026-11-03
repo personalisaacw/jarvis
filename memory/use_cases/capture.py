@@ -130,6 +130,8 @@ class CaptureBatchUseCase:
         near = self._store.nearest(vector, 1, kinds=_RECALLABLE_KINDS, scope=scope)
         if near and near[0][1] >= self._params().get("dedup_threshold"):
             existing, sim = near[0]
+            # captured before the dedup access, so replay judges the memory as it was found
+            decided_at = now
             self._store.add_access(
                 existing.id, now, AccessKind.EXPLICIT if explicit else AccessKind.REINFORCED
             )
@@ -140,6 +142,7 @@ class CaptureBatchUseCase:
                 context = {
                     "tier_at_time": existing.tier.value, "similarity": sim, "rank_at_time": 0,
                     "scope": existing.scope, "query_scope": project_scope,
+                    "decided_at": decided_at,
                 }
                 if mode is not None:
                     context["mode"] = mode
@@ -264,4 +267,5 @@ class CaptureBatchUseCase:
             "scope": memory.scope,
             "query_scope": project_scope,
             "mode": turn.mode,
+            "decided_at": turn.at,  # the recall moment: replay excludes the access it wrote
         }

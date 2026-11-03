@@ -136,6 +136,8 @@ class MemoryService:
     ) -> None:
         recalled_ids = [m.id for m in recalled.memories] if recalled is not None else []
         turn = self._turn(mode, user_text, assistant_text, vec, self.project_scope, recalled_ids)
+        if recalled is not None and recalled.at is not None:
+            turn.at = recalled.at  # the turn's decisions date from recall, before the answer
         if self._pending_score is not None:
             self._scores[turn.id] = self._pending_score
             self._pending_score = None

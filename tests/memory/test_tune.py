@@ -106,6 +106,19 @@ def test_loss_ignores_accesses_after_event_time(tuner, store, clock):
     assert tuner.loss(Params.defaults(), [e], now) == 1
 
 
+def test_loss_excludes_the_access_written_at_decided_at(tuner, store, clock):
+    now = clock.now()
+    m = _memory(store, "d", MemoryKind.DECISION, 0.35, now - 20 * DAY)
+    store.add_access("d", now, "recalled")  # written by the recall that produced the event
+    stale = dict(at=now + 30, decided_at=now)
+    p = Params.defaults()
+    # dormant once the recall's own access is excluded; without decided_at it counts
+    assert tuner.loss(p, [event(EventLabel.STALE, m, **stale)], now + 30) == 0.0
+    assert tuner.loss(p, [event(EventLabel.STALE, m, at=now + 30)], now + 30) == 1.0
+    miss = event(EventLabel.MISS, m, at=now, decided_at=now, **RECALL_CTX)
+    assert tuner.loss(p, [miss], now) == 1.0
+
+
 def test_missed_decisions_lower_decision_decay(tuner, store, clock):
     now = clock.now()
     mems = _missed_decisions(store, now)

@@ -36,6 +36,7 @@ class RecallResult:
     newly_added: List[Memory]
     working_turns: List[Turn]
     profile: Profile
+    at: Optional[float] = None  # when recall ran (and wrote its RECALLED accesses)
 
 
 class SessionWorkingSet:
@@ -149,7 +150,7 @@ class RecallUseCase:
         if include_dormant:
             pool = [s for s in scored if s[0].tier != Tier.ARCHIVED]
             top = sorted(pool, key=lambda s: s[1], reverse=True)[: int(p.get("recall_k"))]
-            return self._result([s[0] for s in top], [], turns, profile)
+            return self._result([s[0] for s in top], [], turns, profile, now)
 
         in_profile = {m.id for m in profile.preferences + profile.features}
         candidates = self._candidates([s for s in scored if s[0].id not in in_profile], p)
@@ -159,13 +160,14 @@ class RecallUseCase:
         added = self.working_set.merge(chosen or [], int(p.get("working_set_patience")))
         for m in added:
             self._store.add_access(m.id, now, AccessKind.RECALLED)
-        return self._result(self.working_set.members(), added, turns, profile)
+        return self._result(self.working_set.members(), added, turns, profile, now)
 
     def _result(
-        self, memories: List[Memory], added: List[Memory], turns: List[Turn], profile: Profile
+        self, memories: List[Memory], added: List[Memory], turns: List[Turn], profile: Profile,
+        at: float,
     ) -> RecallResult:
         self._last_ids = [m.id for m in memories]
-        return RecallResult(memories, added, turns, profile)
+        return RecallResult(memories, added, turns, profile, at)
 
     def _score_all(
         self, query_vec: np.ndarray, project_scope: str, now: float, p: Params

@@ -273,3 +273,29 @@ def test_one_extraction_event_per_successful_batch(store, embedder, clock):
     ext.raise_next = 1
     assert uc.execute([turn(clock, "t4")], SCOPE, 0.2) is None
     assert len(events(store, EventLabel.EXTRACTION)) == 2  # failed batch logs nothing
+
+
+# ---- review fixes ----
+
+def test_recall_events_carry_the_recall_turns_time_as_decided_at(store, embedder, clock):
+    put(store, clock, "a", "alpha fact")
+    put(store, clock, "b", "beta fact")
+    put(store, clock, "c", "gamma fact")
+    t = turn(clock, recalled=["a", "b", "c"])
+    clock.advance(30)  # the batch is captured later than the recall turn
+    ex = Extraction(reinforce=["a"], irrelevant=["b"],
+                    supersede=[Supersede("c", "delta fact", MemoryKind.FACT, 0.5)])
+    run(store, embedder, clock, ex, [t])
+    for label in (EventLabel.HIT, EventLabel.FALSE_RECALL, EventLabel.STALE):
+        (e,) = events(store, label)
+        assert e.context["decided_at"] == t.at
+
+
+def test_dedup_miss_decided_at_precedes_its_own_access(store, embedder, clock):
+    put(store, clock, "m1", "use postgres", tier=Tier.DORMANT)
+    clock.advance(10)
+    ex = Extraction(new=[NewMemory(MemoryKind.DECISION, "project", "use postgres", 0.7)])
+    run(store, embedder, clock, ex, [turn(clock)])
+    (miss,) = events(store, EventLabel.MISS)
+    reinforced = [a for a in store.get("m1").accesses if a.kind == AccessKind.REINFORCED]
+    assert miss.context["decided_at"] == clock.now() == reinforced[0].at

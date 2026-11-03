@@ -124,29 +124,45 @@ class TuneParamsUseCase:
 
     def _reset_caches(self) -> None:
         self._memories: Dict[str, Optional[Memory]] = {}
-        self._as_of: Dict[Tuple[str, float], Optional[Memory]] = {}
-        self._strengths: Dict[Tuple[str, float, float, float], float] = {}
+        self._as_of: Dict[Tuple[str, float, bool], Optional[Memory]] = {}
+        self._strengths: Dict[Tuple[str, float, float, bool, float, float], float] = {}
 
-    def _memory_at(self, memory_id: Optional[str], t: float) -> Optional[Memory]:
-        """The memory as it was at time t: only accesses that had happened by then."""
+    @staticmethod
+    def _cutoff(e: MemoryEvent, t: float) -> Tuple[float, bool]:
+        """(time, inclusive): which accesses the decision behind e could have seen.
+
+        With `decided_at` (the recall or dedup moment) the access that decision itself wrote
+        is excluded (strictly before); older events fall back to everything up to t.
+        """
+        decided_at = e.context.get("decided_at")
+        if decided_at is not None:
+            return float(decided_at), False
+        return t, True
+
+    def _memory_at(self, memory_id: Optional[str], cutoff: float,
+                   inclusive: bool = True) -> Optional[Memory]:
+        """The memory as it was at the cutoff: only accesses that had happened by then."""
         if memory_id is None:
             return None
-        key = (memory_id, t)
+        key = (memory_id, cutoff, inclusive)
         if key not in self._as_of:
             if memory_id not in self._memories:
                 self._memories[memory_id] = self._store.get(memory_id)
             m = self._memories[memory_id]
             self._as_of[key] = None if m is None else dataclasses.replace(
-                m, accesses=[a for a in m.accesses if a.at <= t]
+                m, accesses=[a for a in m.accesses
+                             if (a.at <= cutoff if inclusive else a.at < cutoff)]
             )
         return self._as_of[key]
 
     def _tier_at(self, e: MemoryEvent, p: Params, t: float) -> Optional[Tier]:
-        m = self._memory_at(e.memory_id, t)
+        cutoff, inclusive = self._cutoff(e, t)
+        m = self._memory_at(e.memory_id, cutoff, inclusive)
         if m is None:
             return None
         # strength depends on p only through these two values; most candidates share them
-        key = (m.id, t, p.decay(effective_kind(m)), p.get("importance_weight"))
+        key = (m.id, t, cutoff, inclusive, p.decay(effective_kind(m)),
+               p.get("importance_weight"))
         if key not in self._strengths:
             self._strengths[key] = strength(m, t, p)
         return tier_for(self._strengths[key], p)
