@@ -1,5 +1,6 @@
 from typing import List
 
+from memory.adapters.prompt_renderer import clip
 from memory.domain.entities import Memory, MemoryOp, Turn
 
 _KINDS = "fact, decision, feature, preference, episode"
@@ -63,7 +64,8 @@ Rules:
 
 def _render_turns(turns: List[Turn]) -> str:
     return "\n".join(
-        "[turn %s] user: %s\nassistant: %s" % (t.id, t.user_text, t.assistant_text) for t in turns
+        "[turn %s] user: %s\nassistant: %s" % (t.id, clip(t.user_text), clip(t.assistant_text))
+        for t in turns
     ) or "(none)"
 
 

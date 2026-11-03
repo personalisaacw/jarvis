@@ -84,3 +84,15 @@ def test_code_prefix():
     assert out.startswith("## Project context\n") and out.endswith("\n\n")
     assert "voice diff reviewer" in out and "use sqlite" in out
     assert render_code_prefix(EMPTY, [], SCOPE) == ""
+
+
+def test_render_turns_caps_long_texts_at_400_chars():
+    long_answer = "x" * 2000
+    t = Turn(id="t", session_id="s", at=0.0, project_scope=SCOPE, mode="think",
+             user_text="q" * 401, assistant_text=long_answer, embedding=vec("t"))
+    _, user, jarvis = render_turns([t]).split("\n")
+    assert user == "User: " + "q" * 399 + "\u2026"
+    assert jarvis == "JARVIS: " + "x" * 399 + "\u2026"
+    assert len(user) - len("User: ") == 400 and len(jarvis) - len("JARVIS: ") == 400
+    short = render_turns([_turn()])
+    assert "\u2026" not in short and short.endswith("JARVIS: hello")

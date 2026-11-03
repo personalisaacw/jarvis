@@ -4,6 +4,12 @@ from typing import List
 from memory.domain.entities import GLOBAL_SCOPE, Memory, Turn
 
 _PROJECT_PREFIX = "project:"
+TURN_TEXT_CHARS = 400  # per user/assistant text, so one long answer cannot flood a prompt
+
+
+def clip(text: str, limit: int = TURN_TEXT_CHARS) -> str:
+    """text, or its first limit-1 characters plus an ellipsis when it is longer than limit."""
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
 
 
 def _basename(project_scope: str) -> str:
@@ -42,8 +48,8 @@ def render_turns(turns: List[Turn]) -> str:
         return ""
     lines = []
     for t in turns:
-        lines.append("User: " + t.user_text)
-        lines.append("JARVIS: " + t.assistant_text)
+        lines.append("User: " + clip(t.user_text))
+        lines.append("JARVIS: " + clip(t.assistant_text))
     return "Recent conversation:\n" + "\n".join(lines)
 
 
