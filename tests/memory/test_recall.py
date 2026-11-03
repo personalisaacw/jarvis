@@ -109,6 +109,21 @@ def test_gate_keeps_working_set_visible_then_evicts_after_patience(recall, store
     assert r.memories == [] and r.newly_added == []
 
 
+@pytest.mark.parametrize("status", [Status.SUPERSEDED, Status.FORGOTTEN])
+def test_member_that_stops_being_current_leaves_the_working_set_at_once(recall, store, status):
+    store.add(_m("alpha", id="a"))
+    store.add(_m("gamma", id="g"))
+    recall.execute(vec("alpha"), SCOPE, "think")
+    assert _ids(recall.execute(vec("gamma"), SCOPE, "think")) == ["a", "g"]
+    gone = store.get("a")
+    gone.status = status
+    store.update(gone)
+    r = recall.execute(vec("gamma"), SCOPE, "think")  # gate passes on "g"
+    assert _ids(r) == ["g"] and recall.last_recalled_ids() == ["g"]
+    r = recall.execute(vec("beta"), SCOPE, "think")  # gate blocks: the set is still pruned
+    assert _ids(r) == ["g"]
+
+
 def test_budget_quick_is_two(recall, store):
     for i in range(5):
         store.add(_m("same", id="a%d" % i, importance=1.0 + i * 0.1))

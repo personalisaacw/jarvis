@@ -69,6 +69,11 @@ class SessionWorkingSet:
         self._members = kept + added
         return added
 
+    def retain(self, ids: set) -> None:
+        """Drop members whose id is not in `ids` (e.g. superseded or forgotten since entry)."""
+        self._members = [m for m in self._members if m.id in ids]
+        self._misses = {i: n for i, n in self._misses.items() if i in ids}
+
     def reset(self) -> None:
         self._members = []
         self._misses = {}
@@ -149,6 +154,7 @@ class RecallUseCase:
         in_profile = {m.id for m in profile.preferences + profile.features}
         candidates = self._candidates([s for s in scored if s[0].id not in in_profile], p)
         chosen = self._gate_and_budget(candidates, scored, in_profile, project_scope, mode, p, now)
+        self.working_set.retain({s[0].id for s in scored})  # only current memories render
         # A blocked gate still ticks miss counters, so the set keeps rendering but can age out.
         added = self.working_set.merge(chosen or [], int(p.get("working_set_patience")))
         for m in added:
