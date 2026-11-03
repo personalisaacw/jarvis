@@ -4,12 +4,12 @@ import os
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from adapters.vector_store import FaissAdapter
+from memory.adapters.sqlite_store import SqliteMemoryStore
 from adapters.embeddings import HuggingFaceAdapter
 from use_cases.routing import LearnFromFeedbackUseCase
 
 def seed():
-    vector_store = FaissAdapter()
+    vector_store = SqliteMemoryStore()
     embedding_engine = HuggingFaceAdapter()
     feedback_uc = LearnFromFeedbackUseCase(vector_store, embedding_engine)
     

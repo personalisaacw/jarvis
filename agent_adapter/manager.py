@@ -45,7 +45,8 @@ class AgentManager:
     def __init__(
         self,
         parser: Optional[BaseParser] = None,
-        on_speech: Optional[Callable[[str], None]] = None
+        on_speech: Optional[Callable[[str], None]] = None,
+        on_coding_turn: Optional[Callable[[str, int, int, List[str], str], None]] = None
     ):
         # Auto-configure parser: Groq if key is present, otherwise fallback
         if parser:
@@ -57,6 +58,9 @@ class AgentManager:
         self.parser = AudioProgressThrottler(base_parser)
 
         self.on_speech = on_speech
+        self.on_coding_turn = on_coding_turn
+        self._last_prompt: Optional[str] = None
+        self._last_cwd: Optional[str] = None
         self.active_session: Optional[CLIAgentSession] = None
         self._cli_registry: Dict[str, Callable[[str, str, bool], List[str]]] = {}
         self._is_reviewing = False
@@ -83,7 +87,8 @@ class AgentManager:
         cli_name: str,
         prompt: str,
         cwd: Optional[str] = None,
-        is_continuation: bool = False
+        is_continuation: bool = False,
+        memory_prompt: Optional[str] = None
     ) -> Optional[CLIAgentSession]:
         """Launches a new agent session for the specified CLI name and initial prompt."""
         if self.has_active_session() and not is_continuation:
@@ -103,6 +108,9 @@ class AgentManager:
 
         # ── Capture baseline for diff verification asynchronously ──
         if not is_continuation:
+            self._last_prompt = memory_prompt if memory_prompt is not None else prompt
+            self._last_cwd = working_dir
+
             def capture_baseline():
                 try:
                     diff_engine = DiffEngineFactory.create(working_dir)
@@ -223,6 +231,25 @@ class AgentManager:
     def _finish_review(self) -> None:
         """Clean up review state and return to ambient mode."""
         self._is_reviewing = False
+        completed = self.review_coordinator.last_completed_session if self.review_coordinator else None
+        self._report_coding_turn(completed)
         self.review_coordinator = None
         self.voice_grammar = None
         print("[AgentManager] Diff review complete. Returning to ambient voice mode.")
+
+    def _report_coding_turn(self, completed) -> None:
+        """Report the finished coding turn (prompt, review outcome) to on_coding_turn."""
+        if not self.on_coding_turn or not self._last_prompt:
+            return
+        if completed is not None:
+            accepted = completed.accepted_count
+            rejected = completed.rejected_count
+            files = [fd.file_path for fd in completed.file_diffs]
+        else:
+            accepted, rejected, files = 0, 0, []
+        prompt, cwd = self._last_prompt, self._last_cwd
+        self._last_prompt = None
+        try:
+            self.on_coding_turn(prompt, accepted, rejected, files, cwd)
+        except Exception as e:
+            print(f"[AgentManager] Warning: on_coding_turn failed: {e}")

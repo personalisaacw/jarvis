@@ -1,16 +1,13 @@
-<<<<<<< HEAD
-=======
 import os
 import shutil
 import subprocess
->>>>>>> dev
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, Response
 import httpx
 import json
 import time
 
-from adapters.vector_store import FaissAdapter
+from memory.adapters.sqlite_store import SqliteMemoryStore
 from adapters.embeddings import HuggingFaceAdapter
 from use_cases.routing import RouteCommandUseCase
 from domain.entities import Intent
@@ -31,63 +28,10 @@ THINKING_NUM_CTX = 8192
 # ROUTER INITIALIZATION
 # ============================================================
 
-<<<<<<< HEAD
 print("[INIT] Loading Vector DB Router...")
-vector_store = FaissAdapter()
+vector_store = SqliteMemoryStore()
 embedding_engine = HuggingFaceAdapter()
 route_use_case = RouteCommandUseCase(vector_store, embedding_engine, fallback_threshold=0.30)
-=======
-print("[INIT] Loading Semantic Router on CPU...")
-encoder = HuggingFaceEncoder(name="sentence-transformers/all-MiniLM-L6-v2")
-
-quick_route = Route(
-    name="quick",
-    utterances=[
-        "what time is it",
-        "how tall is the eiffel tower",
-        "give me a quick summary of hashmaps",
-        "turn off the living room lights",
-        "who is the president of france",
-        "translate hello to spanish"
-    ]
-)
-
-thinking_route = Route(
-    name="think",
-    utterances=[
-        "design a scalable architecture for a react app",
-        "analyze this concept and explain the pros and cons",
-        "plan a detailed itinerary for my trip to japan",
-        "walk me through the logic of a neural network",
-        "refactor this code and explain the changes"
-    ]
-)
-
-code_route = Route(
-    name="code",
-    utterances=[
-        "write a python script to list files",
-        "implement a new feature in my project",
-        "fix the bug in router.py",
-        "build a flask api",
-        "refactor the authentication logic",
-        "write a javascript function to sort an array",
-        "create a new react component",
-        "write code for sorting an array",
-        "develop a coding solution",
-        "help me refactor some functions",
-        "write a code script",
-        "add a feature to the codebase"
-    ]
-)
-
-semantic_intent_router = SemanticRouter(
-    encoder=encoder, 
-    routes=[quick_route, thinking_route, code_route],
-    auto_sync="local",
-    aggregation="max"
-)
->>>>>>> dev
 
 # ============================================================
 # AUDIT LOGGER HELPERS

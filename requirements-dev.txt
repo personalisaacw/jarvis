@@ -1,0 +1,5 @@
+pytest>=7
+numpy>=1.24
+openai
+pydantic
+fastapi

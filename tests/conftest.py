@@ -1,7 +1,6 @@
 import os
 import pytest
 import numpy as np
-import onnxruntime as ort
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "silero_vad.onnx")
 
@@ -11,6 +10,7 @@ def vad_session():
     if not os.path.exists(MODEL_PATH):
         pytest.skip(f"Silero VAD ONNX model file not found at {MODEL_PATH}")
     
+    ort = pytest.importorskip("onnxruntime")
     opts = ort.SessionOptions()
     opts.inter_op_num_threads = 1
     opts.intra_op_num_threads = 1
